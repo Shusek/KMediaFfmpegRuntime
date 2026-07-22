@@ -508,6 +508,16 @@ def write_identity_header(path: Path, runtime_id: str, configuration: str) -> No
     )
 
 
+def desktop_java_home() -> Path:
+    if platform.system() == "Darwin":
+        return Path(run("/usr/libexec/java_home").strip())
+    configured = os.environ.get("JAVA_HOME")
+    if configured:
+        return Path(configured)
+    javac = shutil.which("javac")
+    return Path(javac).resolve().parents[1] if javac is not None else Path("/__missing_java_home__")
+
+
 def compile_probe(
     target: str,
     runtime: Path,
@@ -544,11 +554,7 @@ def compile_probe(
             "-Wl,-soname,libkmediaffmpeg_probe.so", "-Wl,-z,relro", "-Wl,-z,now", "-o", str(output),
         )
         return output.name
-    if platform.system() == "Darwin":
-        java_home = Path(run("/usr/libexec/java_home").strip())
-    else:
-        javac = shutil.which("javac")
-        java_home = Path(javac).resolve().parents[1] if javac is not None else Path("/__missing_java_home__")
+    java_home = desktop_java_home()
     if not java_home.is_dir():
         raise ValueError("JAVA_HOME is required to build the desktop JNI probe")
     includes = ["-I", str(generated), "-I", str(prefix / "include"), "-I", str(java_home / "include")]
