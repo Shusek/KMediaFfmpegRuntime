@@ -518,6 +518,19 @@ def desktop_java_home() -> Path:
     return Path(javac).resolve().parents[1] if javac is not None else Path("/__missing_java_home__")
 
 
+def windows_import_library(prefix: Path, logical: str) -> Path:
+    library_dir = prefix / "lib"
+    for ending in (".dll.a", ".lib", ".def"):
+        candidates = sorted(
+            path for path in library_dir.glob(f"*kmediaffmpeg_{logical}*{ending}") if path.is_file()
+        )
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            raise ValueError(f"{logical}: multiple Windows import inputs ending in {ending}")
+    raise ValueError(f"{logical}: Windows import library or definition file is missing")
+
+
 def compile_probe(
     target: str,
     runtime: Path,
@@ -570,8 +583,10 @@ def compile_probe(
             "-Wl,-install_name,@rpath/libkmediaffmpeg_probe.dylib", "-o", str(output))
     else:
         output = runtime / "kmediaffmpeg_probe.dll"
+        avutil_import = windows_import_library(prefix, "avutil")
+        ass_import = windows_import_library(prefix, "ass")
         run("cc", "-shared", *includes, "-I", str(java_home / "include/win32"), str(source),
-            "-L", str(prefix / "lib"), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-o", str(output))
+            str(avutil_import), str(ass_import), "-o", str(output))
     return output.name
 
 

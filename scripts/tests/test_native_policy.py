@@ -93,6 +93,10 @@ class NativePolicyTest(unittest.TestCase):
             runtime.mkdir()
             (prefix / "include").mkdir(parents=True)
             (prefix / "lib").mkdir()
+            avutil_import = prefix / "lib/libkmediaffmpeg_avutil-60.def"
+            ass_import = prefix / "lib/libkmediaffmpeg_ass.dll.a"
+            avutil_import.touch()
+            ass_import.touch()
             work.mkdir()
             (java / "include/win32").mkdir(parents=True)
             with (
@@ -105,7 +109,9 @@ class NativePolicyTest(unittest.TestCase):
                     None, None, None,
                 )
             command = invoke.call_args.args
-            self.assertEqual(str(prefix / "lib"), command[command.index("-L") + 1])
+            self.assertIn(str(avutil_import), command)
+            self.assertIn(str(ass_import), command)
+            self.assertNotIn("-L", command)
 
 
 if __name__ == "__main__":
