@@ -46,6 +46,12 @@ class NativePolicyTest(unittest.TestCase):
         self.assertEqual(android[0], linux[0])
         self.assertNotEqual(android[1], linux[1])
 
+    def test_runtime_id_is_always_ascii_lf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "runtime-id.txt"
+            BUILD.write_runtime_id(output, "runtime-id")
+            self.assertEqual(b"runtime-id\n", output.read_bytes())
+
     def test_command_path_converts_windows_paths_for_msys_tools(self):
         with (
             mock.patch.object(BUILD.platform, "system", return_value="Windows"),
@@ -73,6 +79,7 @@ class NativePolicyTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("id: setup_java", workflow)
         self.assertIn("JAVA_HOME: ${{ steps.setup_java.outputs.path }}", workflow)
+        self.assertIn("| tr -d '\\r' | sort -u", workflow)
 
     def test_desktop_java_home_uses_explicit_path_when_msys_hides_javac(self):
         with tempfile.TemporaryDirectory() as directory:

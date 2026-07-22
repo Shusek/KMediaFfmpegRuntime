@@ -508,6 +508,10 @@ def write_identity_header(path: Path, runtime_id: str, configuration: str) -> No
     )
 
 
+def write_runtime_id(path: Path, runtime_id: str) -> None:
+    path.write_bytes((runtime_id + "\n").encode("ascii"))
+
+
 def desktop_java_home() -> Path:
     if platform.system() == "Darwin":
         return Path(run("/usr/libexec/java_home").strip())
@@ -787,7 +791,7 @@ def main() -> int:
     if args.target.startswith("ios-"):
         package_ios_frameworks(runtime, output, args.target)
     write_evidence(output, args.target, ffmpeg_args, signature, downloads, work)
-    (output / "runtime-id.txt").write_text(runtime_id + "\n")
+    write_runtime_id(output / "runtime-id.txt", runtime_id)
     verification = [
         sys.executable, "-B", str(ROOT / "scripts/verify_native_output.py"),
         "--output", str(output), "--target", args.target,
