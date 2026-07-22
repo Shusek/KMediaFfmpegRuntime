@@ -262,7 +262,7 @@ jobs:
           path: ${{ runner.temp }}/apple
       - name: Verify one process-wide runtime ID and assemble payloads
         run: |
-          ids="$(find "$RUNNER_TEMP/native" -name runtime-id.txt -exec cat {} \; | sort -u)"
+          ids="$(find "$RUNNER_TEMP/native" -name runtime-id.txt -exec cat {} \; | tr -d '\r' | sort -u)"
           test "$(printf '%s\n' "$ids" | sed '/^$/d' | wc -l)" -eq 1
           test "$ids" = "${{ inputs.tested_runtime_id }}"
           python3 scripts/assemble_payloads.py android \
