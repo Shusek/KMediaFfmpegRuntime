@@ -3,6 +3,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +44,18 @@ class NativePolicyTest(unittest.TestCase):
         self.assertEqual(android, again)
         self.assertEqual(android[0], linux[0])
         self.assertNotEqual(android[1], linux[1])
+
+    def test_command_path_converts_windows_paths_for_msys_tools(self):
+        with (
+            mock.patch.object(BUILD.platform, "system", return_value="Windows"),
+            mock.patch.object(BUILD, "run", return_value="/d/a/_temp/work\n") as invoke,
+        ):
+            self.assertEqual("/d/a/_temp/work", BUILD.command_path(Path("D:/a/_temp/work")))
+        invoke.assert_called_once_with("cygpath", "-u", "D:/a/_temp/work")
+
+    def test_command_path_keeps_posix_paths(self):
+        with mock.patch.object(BUILD.platform, "system", return_value="Darwin"):
+            self.assertEqual("/tmp/work", BUILD.command_path(Path("/tmp/work")))
 
 
 if __name__ == "__main__":
