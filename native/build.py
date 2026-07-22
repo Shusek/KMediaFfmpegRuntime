@@ -1,0 +1,768 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+"""Build one closed KMediaFfmpegRuntime target and its matching native SDK."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+COMPONENTS = ("freetype", "fribidi", "harfbuzz", "libass", "ffmpeg")
+LOGICAL_LIBRARIES = (
+    "avutil", "swresample", "swscale", "avcodec", "avformat",
+    "freetype", "fribidi", "harfbuzz", "ass", "avfilter",
+)
+VERSIONS = {
+    "ffmpeg": "8.1.2",
+    "freetype": "2.14.1",
+    "fribidi": "1.0.16",
+    "harfbuzz": "12.2.0",
+    "libass": "0.17.4",
+}
+LICENSES = {
+    "ffmpeg": "LGPL-2.1-or-later",
+    "freetype": "FTL",
+    "fribidi": "LGPL-2.1-or-later",
+    "harfbuzz": "MIT",
+    "libass": "ISC",
+}
+ANDROID = {
+    "android-arm64-v8a": {
+        "abi": "arm64-v8a", "triple": "aarch64-linux-android", "arch": "aarch64",
+        "cpu": "armv8-a", "meson_family": "aarch64", "meson_cpu": "armv8-a",
+    },
+    "android-armeabi-v7a": {
+        "abi": "armeabi-v7a", "triple": "armv7a-linux-androideabi", "arch": "arm",
+        "cpu": "armv7-a", "meson_family": "arm", "meson_cpu": "armv7-a",
+    },
+}
+APPLE = {
+    "ios-arm64": {"sdk": "iphoneos", "triple": "arm64-apple-ios16.2", "simulator": False},
+    "ios-simulator-arm64": {"sdk": "iphonesimulator", "triple": "arm64-apple-ios16.2-simulator", "simulator": True},
+}
+FRAMEWORK_NAMES = {
+    "avcodec": "KMediaFfmpegAvcodec",
+    "avfilter": "KMediaFfmpegAvfilter",
+    "avformat": "KMediaFfmpegAvformat",
+    "avutil": "KMediaFfmpegAvutil",
+    "swresample": "KMediaFfmpegSwresample",
+    "swscale": "KMediaFfmpegSwscale",
+    "freetype": "KMediaFfmpegFreetype",
+    "fribidi": "KMediaFfmpegFribidi",
+    "harfbuzz": "KMediaFfmpegHarfbuzz",
+    "ass": "KMediaFfmpegAss",
+    "probe": "KMediaFfmpegRuntime",
+}
+
+
+def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
+    effective_command = command
+    if env is not None:
+        effective_command = ("env", *(f"{name}={value}" for name, value in sorted(env.items())), *command)
+    print("+", " ".join(effective_command), flush=True)
+    result = subprocess.run(
+        effective_command,
+        cwd=cwd,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=None,
+    )
+    return result.stdout
+
+
+def load_json(path: Path) -> dict:
+    with path.open(encoding="utf-8") as source:
+        value = json.load(source)
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain an object")
+    return value
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def download(url: str, destination: Path, source_archives: Path | None = None) -> None:
+    if destination.is_file():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source_archives is not None:
+        source = source_archives / destination.name
+        if not source.is_file() or source.is_symlink():
+            raise ValueError(f"offline source input is missing: {source}")
+        shutil.copyfile(source, destination)
+        return
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    request = urllib.request.Request(url, headers={"User-Agent": "KMediaFfmpegRuntime/0.1"})
+    with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
+        shutil.copyfileobj(response, output)
+    temporary.replace(destination)
+
+
+def safe_extract(archive: Path, destination: Path) -> Path:
+    if destination.exists():
+        raise ValueError(f"source destination already exists: {destination}")
+    temporary = destination.parent / (destination.name + ".extract")
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True)
+    with tarfile.open(archive, "r:*") as source:
+        for member in source.getmembers():
+            pure = Path(member.name)
+            if pure.is_absolute() or ".." in pure.parts or member.issym() or member.islnk():
+                raise ValueError(f"unsafe source archive entry: {member.name}")
+        # Every entry was closed over above; Python 3.9 on Xcode runners does
+        # not yet expose tarfile's newer extraction_filter argument.
+        source.extractall(temporary)
+    roots = [item for item in temporary.iterdir() if item.is_dir()]
+    if len(roots) != 1:
+        raise ValueError(f"{archive.name} does not contain exactly one source root")
+    roots[0].replace(destination)
+    temporary.rmdir()
+    return destination
+
+
+def verify_ffmpeg_signature(
+    downloads: Path, policy: dict, source_archives: Path | None
+) -> dict[str, str]:
+    ffmpeg = load_json(ROOT / "compliance/components/ffmpeg.json")
+    signature = downloads / (ffmpeg["sourceArchive"] + ".asc")
+    key = downloads / "ffmpeg-devel.asc"
+    download(ffmpeg["signatureUrl"], signature, source_archives)
+    download("https://ffmpeg.org/ffmpeg-devel.asc", key, source_archives)
+    with tempfile.TemporaryDirectory(prefix="kmediaffmpeg-gpg-") as value:
+        home = Path(value)
+        keyring = Path(value) / "ffmpeg-release-key.gpg"
+        fingerprints = run(
+            "gpg", "--batch", "--no-autostart", "--homedir", str(home),
+            "--with-colons", "--show-keys", "--fingerprint", str(key)
+        )
+        expected = policy["ffmpegSigningFingerprint"]
+        actual = {line.split(":")[9] for line in fingerprints.splitlines() if line.startswith("fpr:")}
+        if expected not in actual:
+            raise ValueError("FFmpeg signing key fingerprint differs from policy")
+        run(
+            "gpg", "--batch", "--no-autostart", "--homedir", str(home),
+            "--dearmor", "--output", str(keyring), str(key),
+        )
+        run(
+            "gpgv", "--keyring", str(keyring), str(signature),
+            str(downloads / ffmpeg["sourceArchive"]),
+        )
+    return {"signature": signature.name, "key": key.name, "fingerprint": policy["ffmpegSigningFingerprint"]}
+
+
+def patch_once(path: Path, before: str, after: str, records: list[dict[str, str]]) -> None:
+    text = path.read_text(encoding="utf-8")
+    if text.count(before) != 1:
+        raise ValueError(f"patch context is not unique in {path}")
+    before_hash = hashlib.sha256(text.encode()).hexdigest()
+    result = text.replace(before, after, 1)
+    path.write_text(result, encoding="utf-8")
+    records.append({
+        "path": path.as_posix(),
+        "beforeSha256": before_hash,
+        "afterSha256": hashlib.sha256(result.encode()).hexdigest(),
+    })
+
+
+def namespace_sources(sources: Path, target: str, records: list[dict[str, str]]) -> None:
+    prefix = "kmediaffmpeg"
+    ffmpeg = sources / "ffmpeg"
+    patch_once(
+        ffmpeg / "configure",
+        "        SLIB_INSTALL_NAME='$(SLIBNAME)'\n        SLIB_INSTALL_LINKS=\n",
+        f"        SLIBPREF=\"lib{prefix}_\"\n        SLIB_INSTALL_NAME='$(SLIBNAME)'\n        SLIB_INSTALL_LINKS=\n",
+        records,
+    )
+    for needle in (
+        "Libs: -L\\${libdir} $rpath -l${fullname#lib} $($shared || echo $libs)",
+        "Libs: -L\\${libdir} -Wl,-rpath,\\${libdir} -l${fullname#lib} $($shared || echo $libs)",
+    ):
+        patch_once(
+            ffmpeg / "ffbuild/pkgconfig_generate.sh",
+            needle,
+            needle.replace("-l${fullname#lib}", f"-l{prefix}_${{fullname#lib}}"),
+            records,
+        )
+    patch_once(sources / "freetype/meson.build", "ft2_lib = library('freetype',", f"ft2_lib = library('{prefix}_freetype',", records)
+    patch_once(sources / "freetype/meson.build", "  version: ft2_so_version,\n", "", records)
+    patch_once(sources / "fribidi/lib/meson.build", "libfribidi = library('fribidi',", f"libfribidi = library('{prefix}_fribidi',", records)
+    patch_once(sources / "fribidi/lib/meson.build", "  version: libversion,\n  soversion: soversion,\n", "", records)
+    harfbuzz = sources / "harfbuzz/src/meson.build"
+    patch_once(harfbuzz, "libharfbuzz = library('harfbuzz', hb_sources,", f"libharfbuzz = library('{prefix}_harfbuzz', hb_sources,", records)
+    patch_once(
+        harfbuzz,
+        f"libharfbuzz = library('{prefix}_harfbuzz', hb_sources,\n  include_directories: incconfig,\n  dependencies: harfbuzz_deps,\n  cpp_args: cpp_args + extra_hb_cpp_args,\n  soversion: hb_so_version,\n  version: version,\n",
+        f"libharfbuzz = library('{prefix}_harfbuzz', hb_sources,\n  include_directories: incconfig,\n  dependencies: harfbuzz_deps,\n  cpp_args: cpp_args + extra_hb_cpp_args,\n",
+        records,
+    )
+    patch_once(
+        harfbuzz,
+        "pkgmod.generate(libharfbuzz,\n  description: 'HarfBuzz text shaping library',\n",
+        "pkgmod.generate(libharfbuzz,\n  filebase: 'harfbuzz',\n  description: 'HarfBuzz text shaping library',\n",
+        records,
+    )
+    libass = sources / "libass/libass/meson.build"
+    patch_once(libass, "    'ass',\n", f"    '{prefix}_ass',\n", records)
+    patch_once(libass, "    version: libass_so_version,\n", "", records)
+    subtitles_patch = ROOT / "native/patches/ffmpeg-8.1.2-subtitles-optional-wrap-unicode.patch"
+    run("patch", "-p1", "--forward", "--input", str(subtitles_patch), cwd=ffmpeg)
+    records.append({"path": subtitles_patch.relative_to(ROOT).as_posix(), "sha256": sha256(subtitles_patch)})
+    if target.startswith("android-"):
+        patch_file = ROOT / "native/patches/ffmpeg-8.1.2-mediacodec-p010.patch"
+        run("patch", "-p1", "--forward", "--input", str(patch_file), cwd=ffmpeg)
+        records.append({"path": patch_file.relative_to(ROOT).as_posix(), "sha256": sha256(patch_file)})
+
+
+def prepare_sources(
+    work: Path, target: str, source_archives: Path | None
+) -> tuple[Path, Path, dict[str, str]]:
+    downloads = work / "downloads"
+    sources = work / "sources"
+    downloads.mkdir(parents=True, exist_ok=True)
+    sources.mkdir(parents=True, exist_ok=True)
+    policy = load_json(ROOT / "compliance/policy/release-policy.json")
+    for component in COMPONENTS:
+        manifest = load_json(ROOT / f"compliance/components/{component}.json")
+        archive = downloads / manifest["sourceArchive"]
+        download(manifest["sourceUrl"], archive, source_archives)
+        if sha256(archive) != manifest["sourceSha256"]:
+            raise ValueError(f"{component} source SHA-256 differs from policy")
+        safe_extract(archive, sources / component)
+    signature = verify_ffmpeg_signature(downloads, policy, source_archives)
+    records: list[dict[str, str]] = []
+    namespace_sources(sources, target, records)
+    (work / "source-patches.json").write_text(json.dumps({"schemaVersion": 1, "patches": records}, indent=2) + "\n")
+    return sources, downloads, signature
+
+
+def quote(value: str) -> str:
+    return "'" + value.replace("'", "\\'") + "'"
+
+
+def meson_array(values: list[str]) -> str:
+    return "[" + ", ".join(quote(item) for item in values) + "]"
+
+
+def android_tools(ndk: Path, target: str) -> tuple[dict[str, str], dict]:
+    details = ANDROID[target]
+    host = platform.system().lower()
+    host_tag = "darwin-x86_64" if host == "darwin" else "linux-x86_64"
+    bin_dir = ndk / "toolchains/llvm/prebuilt" / host_tag / "bin"
+    api = 23
+    cc = bin_dir / f"{details['triple']}{api}-clang"
+    tools = {
+        "c": str(cc), "cpp": str(bin_dir / f"{details['triple']}{api}-clang++"),
+        "ar": str(bin_dir / "llvm-ar"), "nm": str(bin_dir / "llvm-nm"),
+        "ranlib": str(bin_dir / "llvm-ranlib"), "strip": str(bin_dir / "llvm-strip"),
+        "readelf": str(bin_dir / "llvm-readelf"),
+        "sysroot": str(ndk / "toolchains/llvm/prebuilt" / host_tag / "sysroot"),
+    }
+    for name, value in tools.items():
+        if name != "sysroot" and not Path(value).is_file():
+            raise ValueError(f"Android NDK tool is missing: {value}")
+    return tools, details
+
+
+def write_android_cross(path: Path, tools: dict[str, str], details: dict, prefix: Path, work: Path) -> None:
+    mapping = str(work) + "=."
+    compile_args = ["-fPIC", f"-ffile-prefix-map={mapping}", f"-fdebug-prefix-map={mapping}"]
+    link_args = ["-Wl,--build-id=sha1", "-Wl,-z,relro", "-Wl,-z,now", "-Wl,-z,max-page-size=16384"]
+    path.write_text("\n".join([
+        "[binaries]",
+        f"c = {quote(tools['c'])}", f"cpp = {quote(tools['cpp'])}", f"ar = {quote(tools['ar'])}",
+        f"nm = {quote(tools['nm'])}", f"ranlib = {quote(tools['ranlib'])}", f"strip = {quote(tools['strip'])}",
+        "pkg-config = 'pkg-config'", "", "[properties]", "needs_exe_wrapper = true",
+        f"pkg_config_libdir = {quote(str(prefix / 'lib/pkgconfig'))}", "", "[host_machine]", "system = 'android'",
+        f"cpu_family = {quote(details['meson_family'])}", f"cpu = {quote(details['meson_cpu'])}", "endian = 'little'", "",
+        "[built-in options]", f"c_args = {meson_array(compile_args)}", f"cpp_args = {meson_array(compile_args)}",
+        f"c_link_args = {meson_array(link_args)}", f"cpp_link_args = {meson_array(link_args + ['-static-libstdc++'])}",
+    ]) + "\n")
+
+
+def xcrun(sdk: str, *args: str) -> str:
+    return run("xcrun", "--sdk", sdk, *args).strip()
+
+
+def write_apple_cross(path: Path, target: str, prefix: Path, work: Path) -> tuple[dict[str, str], str]:
+    details = APPLE[target]
+    sdk = details["sdk"]
+    sysroot = xcrun(sdk, "--show-sdk-path")
+    tools = {name: xcrun(sdk, "--find", executable) for name, executable in {
+        "c": "clang", "cpp": "clang++", "ar": "ar", "nm": "nm", "ranlib": "ranlib", "strip": "strip",
+    }.items()}
+    common = ["-target", details["triple"], "-isysroot", sysroot, "-fPIC", f"-ffile-prefix-map={work}=."]
+    link = ["-target", details["triple"], "-isysroot", sysroot, "-Wl,-headerpad_max_install_names"]
+    path.write_text("\n".join([
+        "[binaries]", *(f"{name} = {quote(value)}" for name, value in tools.items()), "pkg-config = 'pkg-config'", "",
+        "[built-in options]", f"c_args = {meson_array(common)}", f"cpp_args = {meson_array(common)}",
+        f"c_link_args = {meson_array(link)}", f"cpp_link_args = {meson_array(link)}", "",
+        "[properties]", "needs_exe_wrapper = true", f"pkg_config_libdir = {quote(str(prefix / 'lib/pkgconfig'))}", "",
+        "[host_machine]", "system = 'darwin'", "cpu_family = 'aarch64'", "cpu = 'arm64'", "endian = 'little'",
+    ]) + "\n")
+    return tools, sysroot
+
+
+def component_arguments(component: str, target: str) -> list[str]:
+    manifest = load_json(ROOT / f"compliance/components/{component}.json")
+    arguments = list(manifest.get("buildArguments", []))
+    platform_name = "android" if target.startswith("android-") else "ios" if target.startswith("ios-") else target.split("-", 1)[0]
+    arguments.extend(manifest.get("platformArguments", {}).get(platform_name, []))
+    return arguments
+
+
+def build_meson(component: str, target: str, sources: Path, builds: Path, prefix: Path, cross: Path | None, env: dict[str, str]) -> None:
+    command = ["meson", "setup", str(builds / component), str(sources / component), "--prefix", str(prefix)]
+    if cross is not None:
+        command.extend(["--cross-file", str(cross)])
+    command.extend(component_arguments(component, target))
+    run(*command, env=env)
+    run("meson", "compile", "-C", str(builds / component), "-j", str(os.cpu_count() or 4), env=env)
+    run("meson", "install", "-C", str(builds / component), env=env)
+
+
+def ffmpeg_arguments(target: str) -> list[str]:
+    manifest = load_json(ROOT / "compliance/components/ffmpeg.json")
+    arguments = list(manifest["buildArguments"])
+    platform_name = "android" if target.startswith("android-") else "ios" if target.startswith("ios-") else target.split("-", 1)[0]
+    arguments.extend(manifest.get("platformArguments", {}).get(platform_name, []))
+    if target == "windows-x86_64":
+        arguments.extend([
+            "--disable-pthreads", "--enable-w32threads", "--extra-ldflags=-no-pthread",
+            "--extra-libs=-Wl,-Bstatic -lwinpthread -Wl,-Bdynamic,--exclude-libs,libwinpthread.a",
+        ])
+    return arguments
+
+
+def build_ffmpeg(
+    target: str,
+    sources: Path,
+    prefix: Path,
+    env: dict[str, str],
+    tools: dict[str, str] | None,
+    details: dict | None,
+    sysroot: str | None,
+) -> list[str]:
+    arguments = [f"--prefix={prefix}", *ffmpeg_arguments(target)]
+    if target.startswith("android-"):
+        assert tools is not None and details is not None
+        arguments.extend([
+            "--target-os=android", "--enable-cross-compile", f"--arch={details['arch']}", f"--cpu={details['cpu']}",
+            f"--cc={tools['c']}", f"--cxx={tools['cpp']}", f"--ar={tools['ar']}", f"--nm={tools['nm']}",
+            f"--ranlib={tools['ranlib']}", f"--strip={tools['strip']}", f"--sysroot={tools['sysroot']}",
+            "--extra-cflags=-fPIC", "--extra-ldflags=-Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=16384",
+            "--extra-libs=-lmediandk -landroid -llog",
+        ])
+    elif target.startswith("ios-"):
+        assert tools is not None and details is not None and sysroot is not None
+        arguments.extend([
+            "--target-os=darwin", "--enable-cross-compile", "--arch=arm64", "--enable-pic", "--disable-asm",
+            f"--cc={tools['c']}", f"--cxx={tools['cpp']}", f"--ar={tools['ar']}", f"--nm={tools['nm']}",
+            f"--ranlib={tools['ranlib']}", f"--strip={tools['strip']}", f"--sysroot={sysroot}",
+            f"--extra-cflags=-target {details['triple']} -isysroot {sysroot}",
+            f"--extra-ldflags=-target {details['triple']} -isysroot {sysroot} -Wl,-headerpad_max_install_names",
+        ])
+    run("./configure", *arguments, cwd=sources / "ffmpeg", env=env)
+    make_arguments = ["SLIBPREF=libkmediaffmpeg_", "LD_LIB=-lkmediaffmpeg_%"]
+    run("make", "-j", str(os.cpu_count() or 4), *make_arguments, cwd=sources / "ffmpeg", env=env)
+    run("make", "install", *make_arguments, cwd=sources / "ffmpeg", env=env)
+    return arguments
+
+
+def find_library(prefix: Path, logical: str, target: str) -> Path:
+    roots = [prefix / "bin", prefix / "lib"] if target.startswith("windows-") else [prefix / "lib"]
+    candidates: list[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.glob(f"*kmediaffmpeg_{logical}*"):
+            if path.is_file() and not path.is_symlink() and not path.name.endswith((".a", ".dll.a", ".lib")):
+                candidates.append(path)
+    if len(candidates) != 1:
+        raise ValueError(f"{logical}: expected one namespaced real library, got {[item.name for item in candidates]}")
+    return candidates[0]
+
+
+def destination_name(logical: str, target: str, source: Path) -> str:
+    if target.startswith("windows-"):
+        return source.name
+    if target.startswith("macos-") or target.startswith("ios-"):
+        return f"libkmediaffmpeg_{logical}.dylib"
+    return f"libkmediaffmpeg_{logical}.so"
+
+
+def copy_and_rewrite_runtime(prefix: Path, runtime: Path, target: str) -> dict[str, str]:
+    runtime.mkdir(parents=True, exist_ok=True)
+    originals: dict[str, str] = {}
+    outputs: dict[str, str] = {}
+    for logical in LOGICAL_LIBRARIES:
+        source = find_library(prefix, logical, target)
+        destination = destination_name(logical, target, source)
+        shutil.copyfile(source, runtime / destination)
+        originals[source.name] = destination
+        outputs[logical] = destination
+    if target.startswith("linux-") or target.startswith("android-"):
+        patchelf = shutil.which("patchelf")
+        if target.startswith("linux-") and patchelf is None:
+            raise ValueError("patchelf is required for Linux runtime canonicalization")
+        if patchelf:
+            for name in outputs.values():
+                path = runtime / name
+                run(patchelf, "--set-soname", name, str(path))
+            for name in outputs.values():
+                path = runtime / name
+                needed = run(patchelf, "--print-needed", str(path)).splitlines()
+                for dependency in needed:
+                    replacement = originals.get(Path(dependency).name)
+                    if replacement and replacement != dependency:
+                        run(patchelf, "--replace-needed", dependency, replacement, str(path))
+                if target.startswith("linux-"):
+                    run(patchelf, "--set-rpath", "$ORIGIN", str(path))
+    elif target.startswith("macos-") or target.startswith("ios-"):
+        for name in outputs.values():
+            path = runtime / name
+            run("install_name_tool", "-id", f"@rpath/{name}", str(path))
+            if target.startswith("macos-"):
+                run("install_name_tool", "-add_rpath", "@loader_path", str(path))
+        for name in outputs.values():
+            path = runtime / name
+            dependencies = [line.strip().split(" (", 1)[0] for line in run("otool", "-L", str(path)).splitlines()[1:]]
+            for dependency in dependencies:
+                replacement = originals.get(Path(dependency).name)
+                if replacement and dependency != f"@rpath/{replacement}":
+                    run("install_name_tool", "-change", dependency, f"@rpath/{replacement}", str(path))
+    return outputs
+
+
+def configuration_identity(target: str, arguments: list[str]) -> tuple[str, str]:
+    configuration_material = {
+        "schemaVersion": 1,
+        "target": target,
+        "versions": VERSIONS,
+        "licenses": LICENSES,
+        "ffmpegArguments": arguments,
+    }
+    configuration = hashlib.sha256(
+        json.dumps(configuration_material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    # The runtime ID identifies the release-wide ABI contract and therefore has to be
+    # identical on every target. Target-specific configure arguments remain bound by
+    # configurationSha256 in each manifest.
+    identity_material = {
+        "schemaVersion": 1,
+        "versions": VERSIONS,
+        "licenses": LICENSES,
+        "policy": load_json(ROOT / "compliance/policy/release-policy.json"),
+        "sources": {
+            component: load_json(ROOT / f"compliance/components/{component}.json")["sourceSha256"]
+            for component in COMPONENTS
+        },
+    }
+    identity = hashlib.sha256(
+        json.dumps(identity_material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return f"kmediaffmpeg-8.1.2-ass-0.17.4-{identity[:16]}", configuration
+
+
+def write_identity_header(path: Path, runtime_id: str, configuration: str) -> None:
+    path.write_text(
+        "#pragma once\n"
+        f"#define KMEDIAFFMPEG_RUNTIME_ID \"{runtime_id}\"\n"
+        f"#define KMEDIAFFMPEG_CONFIGURATION_SHA256 \"{configuration}\"\n"
+    )
+
+
+def compile_probe(
+    target: str,
+    runtime: Path,
+    prefix: Path,
+    work: Path,
+    runtime_id: str,
+    configuration: str,
+    tools: dict[str, str] | None,
+    details: dict | None,
+    sysroot: str | None,
+) -> str:
+    generated = work / "generated"
+    generated.mkdir(exist_ok=True)
+    write_identity_header(generated / "runtime_identity.h", runtime_id, configuration)
+    if target.startswith("ios-"):
+        source = ROOT / "native/probe/kmediaffmpeg_probe_apple.c"
+        output = runtime / "libkmediaffmpeg_probe.dylib"
+        assert tools is not None and details is not None and sysroot is not None
+        run(
+            tools["c"], "-dynamiclib", "-fPIC", "-target", details["triple"], "-isysroot", sysroot,
+            "-I", str(generated), "-I", str(prefix / "include"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass",
+            "-Wl,-headerpad_max_install_names",
+            "-Wl,-install_name,@rpath/libkmediaffmpeg_probe.dylib", "-o", str(output),
+        )
+        return output.name
+    source = ROOT / "native/probe/kmediaffmpeg_probe.c"
+    if target.startswith("android-"):
+        output = runtime / "libkmediaffmpeg_probe.so"
+        assert tools is not None
+        run(
+            tools["c"], "-shared", "-fPIC", "-I", str(generated), "-I", str(prefix / "include"),
+            str(source), "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-llog",
+            "-Wl,-soname,libkmediaffmpeg_probe.so", "-Wl,-z,relro", "-Wl,-z,now", "-o", str(output),
+        )
+        return output.name
+    if platform.system() == "Darwin":
+        java_home = Path(run("/usr/libexec/java_home").strip())
+    else:
+        javac = shutil.which("javac")
+        java_home = Path(javac).resolve().parents[1] if javac is not None else Path("/__missing_java_home__")
+    if not java_home.is_dir():
+        raise ValueError("JAVA_HOME is required to build the desktop JNI probe")
+    includes = ["-I", str(generated), "-I", str(prefix / "include"), "-I", str(java_home / "include")]
+    if target.startswith("linux-"):
+        output = runtime / "libkmediaffmpeg_probe.so"
+        run("cc", "-shared", "-fPIC", *includes, "-I", str(java_home / "include/linux"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-Wl,-rpath,$ORIGIN",
+            "-Wl,-soname,libkmediaffmpeg_probe.so", "-o", str(output))
+    elif target.startswith("macos-"):
+        output = runtime / "libkmediaffmpeg_probe.dylib"
+        run("cc", "-dynamiclib", "-fPIC", *includes, "-I", str(java_home / "include/darwin"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-Wl,-rpath,@loader_path",
+            "-Wl,-install_name,@rpath/libkmediaffmpeg_probe.dylib", "-o", str(output))
+    else:
+        output = runtime / "kmediaffmpeg_probe.dll"
+        run("cc", "-shared", *includes, "-I", str(java_home / "include/win32"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-o", str(output))
+    return output.name
+
+
+def write_manifest(
+    path: Path,
+    target: str,
+    distribution_version: str,
+    runtime_id: str,
+    configuration: str,
+    runtime: Path,
+    libraries: list[str],
+) -> None:
+    platform_name = "android" if target.startswith("android-") else target.split("-", 1)[0]
+    abi = ANDROID[target]["abi"] if target in ANDROID else "aarch64" if target.endswith("aarch64") else "arm64" if target.startswith("ios-") else "x86_64"
+    lines = [
+        f"distributionVersion={distribution_version}",
+        f"runtimeId={runtime_id}", f"platform={platform_name}", f"abi={abi}",
+        f"configurationSha256={configuration}", f"libraries={','.join(libraries)}",
+    ]
+    for component in sorted(VERSIONS):
+        lines.extend([f"version.{component}={VERSIONS[component]}", f"license.{component}={LICENSES[component]}"])
+    for library in libraries:
+        lines.append(f"sha256.{library}={sha256(runtime / library)}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def copy_sdk(prefix: Path, runtime: Path, output: Path, target: str, manifest: Path) -> None:
+    sdk = output / "sdk" / target
+    shutil.copytree(prefix / "include", sdk / "include", dirs_exist_ok=True)
+    shutil.copytree(runtime, sdk / "lib", dirs_exist_ok=True)
+    for source in (prefix / "lib", prefix / "bin"):
+        if source.is_dir():
+            for pattern in ("*.dll.a", "*.lib", "*.pc"):
+                for path in source.rglob(pattern):
+                    destination = sdk / ("pkgconfig" if path.suffix == ".pc" else "lib") / path.name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if path.suffix == ".pc":
+                        text = path.read_text(encoding="utf-8")
+                        lines = text.splitlines()
+                        rewritten = []
+                        for line in lines:
+                            if line.startswith("prefix="):
+                                rewritten.append("prefix=${pcfiledir}/..")
+                            elif line.startswith("libdir="):
+                                rewritten.append("libdir=${prefix}/lib")
+                            elif line.startswith("includedir="):
+                                rewritten.append("includedir=${prefix}/include")
+                            else:
+                                rewritten.append(line)
+                        destination.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+                    else:
+                        shutil.copyfile(path, destination)
+    shutil.copyfile(manifest, sdk / "runtime.properties")
+
+
+def package_ios_frameworks(runtime: Path, output: Path, target: str) -> None:
+    frameworks = output / "Frameworks"
+    frameworks.mkdir(parents=True, exist_ok=True)
+    binaries: dict[str, tuple[Path, str]] = {}
+    for logical, framework_name in FRAMEWORK_NAMES.items():
+        source_name = "libkmediaffmpeg_probe.dylib" if logical == "probe" else f"libkmediaffmpeg_{logical}.dylib"
+        source = runtime / source_name
+        framework = frameworks / f"{framework_name}.framework"
+        headers = framework / "Headers"
+        modules = framework / "Modules"
+        headers.mkdir(parents=True)
+        modules.mkdir()
+        binary = framework / framework_name
+        shutil.copyfile(source, binary)
+        header_name = framework_name + ".h"
+        if logical == "probe":
+            shutil.copyfile(ROOT / "native/probe/KMediaFfmpegRuntime.h", headers / header_name)
+        else:
+            (headers / header_name).write_text("#pragma once\n")
+        (modules / "module.modulemap").write_text(
+            f"framework module {framework_name} {{\n  umbrella header \"{header_name}\"\n  export *\n}}\n"
+        )
+        plist = {
+            "CFBundleDevelopmentRegion": "en", "CFBundleExecutable": framework_name,
+            "CFBundleIdentifier": f"io.github.shusek.kmediaffmpeg.{framework_name.lower()}",
+            "CFBundleInfoDictionaryVersion": "6.0", "CFBundleName": framework_name,
+            "CFBundlePackageType": "FMWK", "CFBundleShortVersionString": "0.1.0",
+            "CFBundleVersion": "1", "MinimumOSVersion": "16.2",
+        }
+        with (framework / "Info.plist").open("wb") as destination:
+            plistlib.dump(plist, destination, sort_keys=True)
+        binaries[source_name] = (binary, framework_name)
+    for source_name, (binary, framework_name) in binaries.items():
+        run("install_name_tool", "-id", f"@rpath/{framework_name}.framework/{framework_name}", str(binary))
+        dependencies = [line.strip().split(" (", 1)[0] for line in run("otool", "-L", str(binary)).splitlines()[1:]]
+        for dependency in dependencies:
+            match = binaries.get(Path(dependency).name)
+            if match:
+                run("install_name_tool", "-change", dependency, f"@rpath/{match[1]}.framework/{match[1]}", str(binary))
+
+
+def write_evidence(
+    output: Path,
+    target: str,
+    ffmpeg_args: list[str],
+    signature: dict[str, str],
+    downloads: Path,
+    work: Path,
+) -> None:
+    evidence = output / "compliance"
+    (evidence / "sources").mkdir(parents=True, exist_ok=True)
+    for component in COMPONENTS:
+        manifest = load_json(ROOT / f"compliance/components/{component}.json")
+        shutil.copyfile(downloads / manifest["sourceArchive"], evidence / "sources" / manifest["sourceArchive"])
+    (evidence / "build-arguments").mkdir(parents=True)
+    (evidence / "build-arguments" / "ffmpeg.txt").write_text("\n".join(ffmpeg_args) + "\n")
+    shutil.copyfile(work / "source-patches.json", evidence / "source-patches.json")
+    (evidence / "signature-verification.json").write_text(json.dumps(signature, indent=2) + "\n")
+    shutil.copyfile(ROOT / "compliance/policy/release-policy.json", evidence / "release-policy.json")
+    (evidence / "target.json").write_text(json.dumps({"schemaVersion": 1, "target": target}, indent=2) + "\n")
+
+
+def validate_host_target(target: str) -> None:
+    machine = platform.machine().lower()
+    system = platform.system().lower()
+    if target == "linux-x86_64" and not (system == "linux" and machine in {"x86_64", "amd64"}):
+        raise ValueError("linux-x86_64 must be built on Linux x86_64")
+    if target == "linux-aarch64" and not (system == "linux" and machine in {"aarch64", "arm64"}):
+        raise ValueError("linux-aarch64 must be built on Linux ARM64")
+    if target == "macos-aarch64" and not (system == "darwin" and machine in {"aarch64", "arm64"}):
+        raise ValueError("macos-aarch64 must be built on Apple Silicon")
+    if target == "windows-x86_64" and not (
+        system.startswith(("windows", "mingw", "msys")) and machine in {"x86_64", "amd64"}
+    ):
+        raise ValueError("windows-x86_64 must be built on a matching MSYS2 UCRT64 host")
+    if target.startswith("ios-") and system != "darwin":
+        raise ValueError("Apple slices must be built on macOS")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", choices=sorted(load_json(ROOT / "compliance/policy/release-policy.json")["targets"]), required=True)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--ndk", type=Path)
+    parser.add_argument(
+        "--source-archives", type=Path,
+        help="offline directory containing all pinned source archives and FFmpeg signature inputs",
+    )
+    args = parser.parse_args()
+    if not re.fullmatch(
+        r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
+        args.version,
+    ):
+        raise ValueError("version must be immutable SemVer")
+    validate_host_target(args.target)
+    work = args.work.resolve()
+    output = args.output.resolve()
+    if work.exists() or output.exists():
+        raise ValueError("work and output directories must not already exist")
+    work.mkdir(parents=True)
+    output.mkdir(parents=True)
+    sources, downloads, signature = prepare_sources(
+        work,
+        args.target,
+        args.source_archives.resolve() if args.source_archives is not None else None,
+    )
+    prefix = work / "prefix"
+    builds = work / "builds"
+    prefix.mkdir()
+    builds.mkdir()
+    env = {
+        "LC_ALL": "C", "TZ": "UTC", "SOURCE_DATE_EPOCH": "1767225600", "ZERO_AR_DATE": "1",
+        "PKG_CONFIG_PATH": str(prefix / "lib/pkgconfig"), "PKG_CONFIG_LIBDIR": str(prefix / "lib/pkgconfig"),
+    }
+    cross: Path | None = None
+    tools: dict[str, str] | None = None
+    details: dict | None = None
+    sysroot: str | None = None
+    if args.target.startswith("android-"):
+        if args.ndk is None:
+            raise ValueError("--ndk is required for Android")
+        tools, details = android_tools(args.ndk.resolve(), args.target)
+        cross = work / "android-cross.ini"
+        write_android_cross(cross, tools, details, prefix, work)
+    elif args.target.startswith("ios-"):
+        cross = work / "apple-cross.ini"
+        tools, sysroot = write_apple_cross(cross, args.target, prefix, work)
+        details = APPLE[args.target]
+    for component in ("freetype", "fribidi", "harfbuzz", "libass"):
+        build_meson(component, args.target, sources, builds, prefix, cross, env)
+    ffmpeg_args = build_ffmpeg(args.target, sources, prefix, env, tools, details, sysroot)
+    runtime = output / "runtime"
+    library_names = copy_and_rewrite_runtime(prefix, runtime, args.target)
+    runtime_id, configuration = configuration_identity(args.target, ffmpeg_args)
+    probe_name = compile_probe(args.target, runtime, prefix, work, runtime_id, configuration, tools, details, sysroot)
+    libraries = [library_names[name] for name in LOGICAL_LIBRARIES] + [probe_name]
+    manifest = output / "runtime.properties"
+    write_manifest(manifest, args.target, args.version, runtime_id, configuration, runtime, libraries)
+    copy_sdk(prefix, runtime, output, args.target, manifest)
+    if args.target.startswith("ios-"):
+        package_ios_frameworks(runtime, output, args.target)
+    write_evidence(output, args.target, ffmpeg_args, signature, downloads, work)
+    (output / "runtime-id.txt").write_text(runtime_id + "\n")
+    verification = [
+        sys.executable, "-B", str(ROOT / "scripts/verify_native_output.py"),
+        "--output", str(output), "--target", args.target,
+    ]
+    if args.target.startswith("android-"):
+        assert tools is not None
+        verification.extend(["--readelf", tools["readelf"]])
+    run(*verification)
+    print(runtime_id)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

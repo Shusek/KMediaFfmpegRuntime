@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  policy-and-api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Verify source policy and Python tests
+        run: |
+          python3 -m compileall -q native scripts
+          python3 -m unittest discover -s scripts/tests -v
+          python3 scripts/verify_policy.py --root .
+      - name: Verify Android and desktop APIs
+        run: ./gradlew --no-daemon check
+      - name: Prove forbidden architectures are absent from release policy
+        run: |
+          python3 - <<'PY'
+          import json
+          p=json.load(open('compliance/policy/release-policy.json'))
+          assert set(p['targets']) == {
+            'android-arm64-v8a','android-armeabi-v7a','linux-x86_64','linux-aarch64',
+            'windows-x86_64','macos-aarch64','ios-arm64','ios-simulator-arm64'
+          }
+          PY
+
+  native-macos-arm-smoke:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Require the official Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - name: Install pinned native tools
+        run: |
+          brew install gnupg ninja pkg-config
+          python3 -m venv "$RUNNER_TEMP/meson"
+          "$RUNNER_TEMP/meson/bin/pip" install meson==1.11.2
+          echo "$RUNNER_TEMP/meson/bin" >> "$GITHUB_PATH"
+      - name: Build and interrogate the shared runtime
+        run: |
+          python3 -B native/build.py \
+            --target macos-aarch64 \
+            --version 0.1.0-ci \
+            --work "$RUNNER_TEMP/native-work" \
+            --output "$RUNNER_TEMP/native-output"
+          ./gradlew --no-daemon \
+            -PkmediaFfmpegDesktopOnly=true \
+            -PkmediaFfmpegTestRuntime="$RUNNER_TEMP/native-output/sdk/macos-aarch64" \
+            :kmedia-ffmpeg-runtime-desktop:test \
+            --tests io.github.shusek.kmediaffmpeg.runtime.NativeRuntimeIntegrationTest

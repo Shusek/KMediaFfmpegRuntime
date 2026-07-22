@@ -1,0 +1,8 @@
+.gradle/
+.idea/
+build/
+**/build/
+.DS_Store
+native-work/
+native-dist/
+*.log

@@ -1,0 +1,8 @@
+KMediaFfmpegRuntime
+Copyright 2026 Shusek
+
+This product contains dynamically linked builds of FFmpeg and third-party font
+and subtitle libraries. Their licenses and source locations are listed in
+THIRD_PARTY_NOTICES.md and the release SBOM. No license is granted for an
+upstream component beyond the terms supplied by that component's copyright
+holders.
