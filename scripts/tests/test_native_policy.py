@@ -69,6 +69,11 @@ class NativePolicyTest(unittest.TestCase):
 
             self.assertEqual(runtime, BUILD.find_library(prefix, "avutil", "windows-x86_64"))
 
+    def test_release_build_exports_setup_java_home_into_msys(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("id: setup-java", workflow)
+        self.assertIn("JAVA_HOME: ${{ steps.setup-java.outputs.path }}", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

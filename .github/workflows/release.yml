@@ -117,6 +117,7 @@ jobs:
           ref: ${{ needs.readiness.outputs.revision }}
           persist-credentials: false
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
+        id: setup-java
         with:
           distribution: temurin
           java-version: "17"
@@ -159,6 +160,8 @@ jobs:
         if: startsWith(matrix.target, 'windows-')
         run: python -m pip install meson==1.11.2
       - name: Build the target and its SDK
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.path }}
         run: |
           runner_temp="$RUNNER_TEMP"
           if [[ "${{ matrix.target }}" == windows-* ]]; then runner_temp="$(cygpath -u "$RUNNER_TEMP")"; fi
