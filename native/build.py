@@ -571,7 +571,7 @@ def compile_probe(
     else:
         output = runtime / "kmediaffmpeg_probe.dll"
         run("cc", "-shared", *includes, "-I", str(java_home / "include/win32"), str(source),
-            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-o", str(output))
+            "-L", str(prefix / "lib"), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-o", str(output))
     return output.name
 
 
