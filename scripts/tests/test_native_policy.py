@@ -74,6 +74,15 @@ class NativePolicyTest(unittest.TestCase):
         self.assertIn("id: setup_java", workflow)
         self.assertIn("JAVA_HOME: ${{ steps.setup_java.outputs.path }}", workflow)
 
+    def test_desktop_java_home_uses_explicit_path_when_msys_hides_javac(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(BUILD.platform, "system", return_value="Windows"),
+                mock.patch.object(BUILD.shutil, "which", return_value=None),
+                mock.patch.dict(BUILD.os.environ, {"JAVA_HOME": directory}),
+            ):
+                self.assertEqual(Path(directory), BUILD.desktop_java_home())
+
 
 if __name__ == "__main__":
     unittest.main()
