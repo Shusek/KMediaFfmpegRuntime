@@ -83,6 +83,12 @@ def main() -> int:
         verify_architecture(path, args.target, args.readelf)
         for dependency in dependencies(path, args.target, args.readelf):
             basename = Path(dependency).name
+            if (
+                args.target.startswith(("macos-", "ios-"))
+                and "kmediaffmpeg" in basename
+                and not dependency.startswith("@rpath/")
+            ):
+                raise ValueError(f"{library} retains a non-relocatable Apple dependency: {dependency}")
             if "avcodec" in basename or "avfilter" in basename or "avformat" in basename or "avutil" in basename \
                     or "swresample" in basename or "swscale" in basename or "freetype" in basename \
                     or "fribidi" in basename or "harfbuzz" in basename or basename.startswith("libass"):
