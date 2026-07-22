@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -56,6 +57,17 @@ class NativePolicyTest(unittest.TestCase):
     def test_command_path_keeps_posix_paths(self):
         with mock.patch.object(BUILD.platform, "system", return_value="Darwin"):
             self.assertEqual("/tmp/work", BUILD.command_path(Path("/tmp/work")))
+
+    def test_find_library_ignores_windows_definition_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = Path(directory)
+            (prefix / "bin").mkdir()
+            (prefix / "lib").mkdir()
+            runtime = prefix / "bin/libkmediaffmpeg_avutil-60.dll"
+            runtime.touch()
+            (prefix / "lib/libkmediaffmpeg_avutil-60.def").touch()
+
+            self.assertEqual(runtime, BUILD.find_library(prefix, "avutil", "windows-x86_64"))
 
 
 if __name__ == "__main__":
