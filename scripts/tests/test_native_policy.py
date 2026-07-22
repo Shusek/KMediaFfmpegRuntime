@@ -83,6 +83,30 @@ class NativePolicyTest(unittest.TestCase):
             ):
                 self.assertEqual(Path(directory), BUILD.desktop_java_home())
 
+    def test_windows_probe_links_against_import_library_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            prefix = root / "prefix"
+            work = root / "work"
+            java = root / "java"
+            runtime.mkdir()
+            (prefix / "include").mkdir(parents=True)
+            (prefix / "lib").mkdir()
+            work.mkdir()
+            (java / "include/win32").mkdir(parents=True)
+            with (
+                mock.patch.object(BUILD.platform, "system", return_value="Windows"),
+                mock.patch.dict(BUILD.os.environ, {"JAVA_HOME": str(java)}),
+                mock.patch.object(BUILD, "run") as invoke,
+            ):
+                BUILD.compile_probe(
+                    "windows-x86_64", runtime, prefix, work, "runtime-id", "configuration",
+                    None, None, None,
+                )
+            command = invoke.call_args.args
+            self.assertEqual(str(prefix / "lib"), command[command.index("-L") + 1])
+
 
 if __name__ == "__main__":
     unittest.main()
