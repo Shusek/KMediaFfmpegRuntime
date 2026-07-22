@@ -314,7 +314,8 @@ jobs:
             -PreleaseRepository="$RUNNER_TEMP/maven" \
             :kmedia-ffmpeg-runtime-android:publishAllPublicationsToReleaseRepository \
             :kmedia-ffmpeg-runtime-desktop:publishAllPublicationsToReleaseRepository
-          find "$RUNNER_TEMP/maven" -name maven-metadata.xml -delete
+          python3 scripts/build_maven_central_bundle.py normalize \
+            --staging "$RUNNER_TEMP/maven" --version "$RELEASE_VERSION"
           tar --sort=name --mtime="@${{ needs.readiness.outputs.epoch }}" \
             --owner=0 --group=0 --numeric-owner -czf \
             "$RUNNER_TEMP/kmedia-ffmpeg-runtime-$RELEASE_VERSION-maven-repository.tar.gz" \

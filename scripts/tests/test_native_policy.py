@@ -38,6 +38,42 @@ class NativePolicyTest(unittest.TestCase):
         self.assertIn("--enable-filter=buffer,buffersink,subtitles,scale,format", arguments)
         self.assertIn("--enable-videotoolbox", arguments)
 
+    def test_macos_rewrites_major_version_install_names_to_rpath(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = root / "prefix"
+            runtime = root / "runtime"
+            library = prefix / "lib"
+            library.mkdir(parents=True)
+            avutil = library / "libkmediaffmpeg_avutil.60.26.102.dylib"
+            avutil.write_bytes(b"avutil")
+            (library / "libkmediaffmpeg_avutil.60.dylib").symlink_to(avutil.name)
+            swresample = library / "libkmediaffmpeg_swresample.6.3.102.dylib"
+            swresample.write_bytes(b"swresample")
+            absolute_dependency = str(library / "libkmediaffmpeg_avutil.60.dylib")
+
+            def command(*arguments: str, **_kwargs: object) -> str:
+                if arguments[:2] == ("otool", "-L"):
+                    if "swresample" in arguments[2]:
+                        return f"{arguments[2]}:\n\t{absolute_dependency} (compatibility version 60.0.0)\n"
+                    return f"{arguments[2]}:\n"
+                return ""
+
+            with (
+                mock.patch.object(BUILD, "LOGICAL_LIBRARIES", ("avutil", "swresample")),
+                mock.patch.object(BUILD, "run", side_effect=command) as invoke,
+            ):
+                BUILD.copy_and_rewrite_runtime(prefix, runtime, "macos-aarch64")
+
+            self.assertIn(
+                mock.call(
+                    "install_name_tool", "-change", absolute_dependency,
+                    "@rpath/libkmediaffmpeg_avutil.dylib",
+                    str(runtime / "libkmediaffmpeg_swresample.dylib"),
+                ),
+                invoke.call_args_list,
+            )
+
     def test_runtime_identity_is_release_wide_and_configuration_is_target_specific(self):
         android = BUILD.configuration_identity("android-arm64-v8a", BUILD.ffmpeg_arguments("android-arm64-v8a"))
         again = BUILD.configuration_identity("android-arm64-v8a", BUILD.ffmpeg_arguments("android-arm64-v8a"))

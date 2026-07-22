@@ -435,6 +435,10 @@ def copy_and_rewrite_runtime(prefix: Path, runtime: Path, target: str) -> dict[s
         source = find_library(prefix, logical, target)
         destination = destination_name(logical, target, source)
         shutil.copyfile(source, runtime / destination)
+        for root in (prefix / "lib", prefix / "bin"):
+            if root.is_dir():
+                for installed in root.glob(f"*kmediaffmpeg_{logical}*"):
+                    originals[installed.name] = destination
         originals[source.name] = destination
         outputs[logical] = destination
     if target.startswith("linux-") or target.startswith("android-"):
