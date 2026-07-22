@@ -33,7 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: refs/tags/v${{ inputs.version }}
           fetch-depth: 0
           persist-credentials: false
       - name: Download and hash-bind the public Maven repository
@@ -48,6 +47,8 @@ jobs:
           test "$expected" = "$(sha256sum "$RUNNER_TEMP/release/$name" | awk '{print $1}')"
           mkdir "$RUNNER_TEMP/staging"
           tar -xzf "$RUNNER_TEMP/release/$name" -C "$RUNNER_TEMP/staging" --strip-components=1
+          python3 scripts/build_maven_central_bundle.py normalize \
+            --staging "$RUNNER_TEMP/staging" --version "$RELEASE_VERSION"
       - name: Sign every artifact without logging protected values
         env:
           MAVEN_SIGNING_KEY: ${{ secrets.MAVEN_SIGNING_KEY }}
@@ -78,7 +79,7 @@ jobs:
           bundle="$RUNNER_TEMP/kmedia-ffmpeg-runtime-$RELEASE_VERSION-central.zip"
           python3 scripts/build_maven_central_bundle.py package \
             --staging "$RUNNER_TEMP/staging" --version "$RELEASE_VERSION" \
-            --epoch "$(git show -s --format=%ct HEAD)" --output "$bundle"
+            --epoch "$(git show -s --format=%ct "refs/tags/v$RELEASE_VERSION")" --output "$bundle"
           unzip -tq "$bundle"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

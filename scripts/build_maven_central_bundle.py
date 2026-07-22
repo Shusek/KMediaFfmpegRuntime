@@ -18,6 +18,7 @@ ARTIFACTS = {
     "kmedia-ffmpeg-runtime-android": "aar",
     "kmedia-ffmpeg-runtime-desktop": "jar",
 }
+GENERATED_CHECKSUM_SUFFIXES = (".md5", ".sha1", ".sha256", ".sha512")
 SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
@@ -32,7 +33,7 @@ def digest(path: Path, algorithm: str) -> str:
     return value.hexdigest()
 
 
-def base_files(staging: Path, version: str) -> list[Path]:
+def required_files(staging: Path, version: str) -> list[Path]:
     if not SEMVER.fullmatch(version):
         raise ValueError("version must be immutable SemVer")
     expected: list[Path] = []
@@ -50,6 +51,11 @@ def base_files(staging: Path, version: str) -> list[Path]:
             if path.is_symlink() or not path.is_file():
                 raise ValueError(f"Maven staging omits a real required artifact: {path}")
             expected.append(path)
+    return sorted(expected)
+
+
+def base_files(staging: Path, version: str) -> list[Path]:
+    expected = required_files(staging, version)
     actual = {
         path for path in (staging / GROUP).rglob("*")
         if path.is_file() and not path.name.endswith((".asc", ".md5", ".sha1"))
@@ -57,6 +63,28 @@ def base_files(staging: Path, version: str) -> list[Path]:
     if actual != set(expected):
         raise ValueError("Maven staging inventory differs from the closed two-coordinate contract")
     return sorted(expected)
+
+
+def normalize(arguments: argparse.Namespace) -> None:
+    """Remove only Gradle metadata/checksums before applying the closed contract."""
+    bases = required_files(arguments.staging, arguments.version)
+    generated: set[Path] = set()
+    for artifact in ARTIFACTS:
+        artifact_root = arguments.staging / GROUP / artifact
+        directory = artifact_root / arguments.version
+        prefix = f"{artifact}-{arguments.version}"
+        generated.add(directory / f"{prefix}.module")
+        generated.add(artifact_root / "maven-metadata.xml")
+        for base in (*bases, directory / f"{prefix}.module", artifact_root / "maven-metadata.xml"):
+            if base.is_relative_to(artifact_root):
+                for suffix in GENERATED_CHECKSUM_SUFFIXES:
+                    generated.add(base.with_name(base.name + suffix))
+    for path in sorted(generated):
+        if path.is_symlink():
+            raise ValueError(f"refusing to normalize a generated symlink: {path}")
+        if path.is_file():
+            path.unlink()
+    base_files(arguments.staging, arguments.version)
 
 
 def checksums(arguments: argparse.Namespace) -> None:
@@ -92,6 +120,10 @@ def package(arguments: argparse.Namespace) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    normalizer = commands.add_parser("normalize")
+    normalizer.add_argument("--staging", type=Path, required=True)
+    normalizer.add_argument("--version", required=True)
+    normalizer.set_defaults(function=normalize)
     checksum = commands.add_parser("checksums")
     checksum.add_argument("--staging", type=Path, required=True)
     checksum.add_argument("--version", required=True)
