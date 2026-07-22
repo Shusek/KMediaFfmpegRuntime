@@ -86,6 +86,13 @@ def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = Non
     return result.stdout
 
 
+def command_path(path: Path) -> str:
+    """Return a path understood by POSIX tools invoked from MSYS Python."""
+    if platform.system() == "Windows":
+        return run("cygpath", "-u", str(path)).strip()
+    return str(path)
+
+
 def load_json(path: Path) -> dict:
     with path.open(encoding="utf-8") as source:
         value = json.load(source)
@@ -153,21 +160,25 @@ def verify_ffmpeg_signature(
     with tempfile.TemporaryDirectory(prefix="kmediaffmpeg-gpg-") as value:
         home = Path(value)
         keyring = Path(value) / "ffmpeg-release-key.gpg"
+        home_arg = command_path(home)
+        key_arg = command_path(key)
+        keyring_arg = command_path(keyring)
+        signature_arg = command_path(signature)
+        archive_arg = command_path(downloads / ffmpeg["sourceArchive"])
         fingerprints = run(
-            "gpg", "--batch", "--no-autostart", "--homedir", str(home),
-            "--with-colons", "--show-keys", "--fingerprint", str(key)
+            "gpg", "--batch", "--no-autostart", "--homedir", home_arg,
+            "--with-colons", "--show-keys", "--fingerprint", key_arg
         )
         expected = policy["ffmpegSigningFingerprint"]
         actual = {line.split(":")[9] for line in fingerprints.splitlines() if line.startswith("fpr:")}
         if expected not in actual:
             raise ValueError("FFmpeg signing key fingerprint differs from policy")
         run(
-            "gpg", "--batch", "--no-autostart", "--homedir", str(home),
-            "--dearmor", "--output", str(keyring), str(key),
+            "gpg", "--batch", "--no-autostart", "--homedir", home_arg,
+            "--dearmor", "--output", keyring_arg, key_arg,
         )
         run(
-            "gpgv", "--keyring", str(keyring), str(signature),
-            str(downloads / ffmpeg["sourceArchive"]),
+            "gpgv", "--keyring", keyring_arg, signature_arg, archive_arg,
         )
     return {"signature": signature.name, "key": key.name, "fingerprint": policy["ffmpegSigningFingerprint"]}
 
