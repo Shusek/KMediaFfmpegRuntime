@@ -408,7 +408,11 @@ def find_library(prefix: Path, logical: str, target: str) -> Path:
         if not root.is_dir():
             continue
         for path in root.glob(f"*kmediaffmpeg_{logical}*"):
-            if path.is_file() and not path.is_symlink() and not path.name.endswith((".a", ".dll.a", ".lib")):
+            if target.startswith("windows-"):
+                is_runtime = path.suffix.lower() == ".dll"
+            else:
+                is_runtime = not path.name.endswith((".a", ".dll.a", ".lib"))
+            if path.is_file() and not path.is_symlink() and is_runtime:
                 candidates.append(path)
     if len(candidates) != 1:
         raise ValueError(f"{logical}: expected one namespaced real library, got {[item.name for item in candidates]}")
