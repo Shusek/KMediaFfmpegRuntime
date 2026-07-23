@@ -92,6 +92,25 @@ def main() -> int:
     }
     if ass_sdk_libraries != set(ass_manifest["libraries"].split(",")):
         raise ValueError("ASS-only SDK contains a foreign runtime library")
+    if args.target.startswith("ios-"):
+        expected_ass_frameworks = {
+            "KMediaAssRuntime.framework",
+            "KMediaFfmpegAss.framework",
+            "KMediaFfmpegFreetype.framework",
+            "KMediaFfmpegFribidi.framework",
+            "KMediaFfmpegHarfbuzz.framework",
+        }
+        ass_framework_root = args.output / "ass" / "Frameworks"
+        actual_ass_frameworks = {
+            path.name for path in ass_framework_root.iterdir() if path.is_dir()
+        }
+        if actual_ass_frameworks != expected_ass_frameworks:
+            raise ValueError("ASS-only iOS SDK has an incomplete or foreign framework inventory")
+        for framework in ass_framework_root.iterdir():
+            binary = framework / framework.stem
+            if not binary.is_file():
+                raise ValueError(f"{framework.name} omits its framework binary")
+            verify_architecture(binary, args.target, args.readelf)
     inventories = (
         (args.output / "ass-runtime", ass_manifest, 5),
         (args.output / "ffmpeg-runtime", manifest, 7),

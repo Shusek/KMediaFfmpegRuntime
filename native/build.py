@@ -858,6 +858,14 @@ def package_ios_frameworks(runtime: Path, output: Path, target: str) -> None:
             match = binaries.get(Path(dependency).name)
             if match:
                 run("install_name_tool", "-change", dependency, f"@rpath/{match[1]}.framework/{match[1]}", str(binary))
+    ass_frameworks = output / "ass" / "Frameworks"
+    ass_frameworks.mkdir(parents=True, exist_ok=True)
+    for logical in (*ASS_LOGICAL_LIBRARIES, "ass-probe"):
+        framework_name = FRAMEWORK_NAMES[logical]
+        shutil.copytree(
+            frameworks / f"{framework_name}.framework",
+            ass_frameworks / f"{framework_name}.framework",
+        )
 
 
 def write_evidence(

@@ -312,7 +312,7 @@ jobs:
             tar --sort=name --mtime="@${{ needs.readiness.outputs.epoch }}" \
               --owner=0 --group=0 --numeric-owner -czf \
               "$RUNNER_TEMP/kmedia-ass-runtime-$RELEASE_VERSION-$target-sdk.tar.gz" \
-              -C "$source/ass" sdk \
+              -C "$source/ass" sdk Frameworks \
               -C "$source" ass-runtime ass-runtime.properties ass-runtime-id.txt compliance
           done
           for target in ios-arm64 ios-simulator-arm64; do
