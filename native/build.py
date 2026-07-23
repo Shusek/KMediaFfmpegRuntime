@@ -23,16 +23,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENTS = ("freetype", "fribidi", "harfbuzz", "libass", "ffmpeg")
-LOGICAL_LIBRARIES = (
-    "avutil", "swresample", "swscale", "avcodec", "avformat",
-    "freetype", "fribidi", "harfbuzz", "ass", "avfilter",
+ASS_COMPONENTS = ("freetype", "fribidi", "harfbuzz", "libass")
+FFMPEG_COMPONENTS = ("ffmpeg",)
+ASS_LOGICAL_LIBRARIES = ("freetype", "fribidi", "harfbuzz", "ass")
+FFMPEG_LOGICAL_LIBRARIES = (
+    "avutil", "swresample", "swscale", "avcodec", "avformat", "avfilter",
 )
+LOGICAL_LIBRARIES = FFMPEG_LOGICAL_LIBRARIES + ASS_LOGICAL_LIBRARIES
 VERSIONS = {
     "ffmpeg": "8.1.2",
     "freetype": "2.14.1",
     "fribidi": "1.0.16",
     "harfbuzz": "12.2.0",
-    "libass": "0.17.4",
+    "libass": "0.17.5",
 }
 LICENSES = {
     "ffmpeg": "LGPL-2.1-or-later",
@@ -66,7 +69,8 @@ FRAMEWORK_NAMES = {
     "fribidi": "KMediaFfmpegFribidi",
     "harfbuzz": "KMediaFfmpegHarfbuzz",
     "ass": "KMediaFfmpegAss",
-    "probe": "KMediaFfmpegRuntime",
+    "ffmpeg-probe": "KMediaFfmpegRuntime",
+    "ass-probe": "KMediaAssRuntime",
 }
 
 
@@ -474,12 +478,53 @@ def copy_and_rewrite_runtime(prefix: Path, runtime: Path, target: str) -> dict[s
     return outputs
 
 
-def configuration_identity(target: str, arguments: list[str]) -> tuple[str, str]:
+def ass_configuration_identity(target: str) -> tuple[str, str]:
+    versions = {component: VERSIONS[component] for component in ASS_COMPONENTS}
+    licenses = {component: LICENSES[component] for component in ASS_COMPONENTS}
+    build_arguments = {
+        component: component_arguments(component, target)
+        for component in ASS_COMPONENTS
+    }
+    configuration_material = {
+        "schemaVersion": 1,
+        "target": target,
+        "versions": versions,
+        "licenses": licenses,
+        "buildArguments": build_arguments,
+    }
+    configuration = hashlib.sha256(
+        json.dumps(configuration_material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    identity_material = {
+        "schemaVersion": 1,
+        "versions": versions,
+        "licenses": licenses,
+        "sources": {
+            component: load_json(ROOT / f"compliance/components/{component}.json")["sourceSha256"]
+            for component in ASS_COMPONENTS
+        },
+        "buildPolicy": {
+            component: load_json(ROOT / f"compliance/components/{component}.json")
+            for component in ASS_COMPONENTS
+        },
+    }
+    identity = hashlib.sha256(
+        json.dumps(identity_material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return f"kmediaass-{VERSIONS['libass']}-{identity[:16]}", configuration
+
+
+def configuration_identity(
+    target: str, arguments: list[str], ass_runtime_id: str | None = None
+) -> tuple[str, str]:
+    if ass_runtime_id is None:
+        ass_runtime_id = ass_configuration_identity(target)[0]
     configuration_material = {
         "schemaVersion": 1,
         "target": target,
         "versions": VERSIONS,
         "licenses": LICENSES,
+        "assRuntimeId": ass_runtime_id,
         "ffmpegArguments": arguments,
     }
     configuration = hashlib.sha256(
@@ -492,6 +537,7 @@ def configuration_identity(target: str, arguments: list[str]) -> tuple[str, str]
         "schemaVersion": 1,
         "versions": VERSIONS,
         "licenses": LICENSES,
+        "assRuntimeId": ass_runtime_id,
         "policy": load_json(ROOT / "compliance/policy/release-policy.json"),
         "sources": {
             component: load_json(ROOT / f"compliance/components/{component}.json")["sourceSha256"]
@@ -501,7 +547,10 @@ def configuration_identity(target: str, arguments: list[str]) -> tuple[str, str]
     identity = hashlib.sha256(
         json.dumps(identity_material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    return f"kmediaffmpeg-8.1.2-ass-0.17.4-{identity[:16]}", configuration
+    return (
+        f"kmediaffmpeg-{VERSIONS['ffmpeg']}-ass-{VERSIONS['libass']}-{identity[:16]}",
+        configuration,
+    )
 
 
 def write_identity_header(path: Path, runtime_id: str, configuration: str) -> None:
@@ -509,6 +558,14 @@ def write_identity_header(path: Path, runtime_id: str, configuration: str) -> No
         "#pragma once\n"
         f"#define KMEDIAFFMPEG_RUNTIME_ID \"{runtime_id}\"\n"
         f"#define KMEDIAFFMPEG_CONFIGURATION_SHA256 \"{configuration}\"\n"
+    )
+
+
+def write_ass_identity_header(path: Path, runtime_id: str, configuration: str) -> None:
+    path.write_text(
+        "#pragma once\n"
+        f"#define KMEDIAASS_RUNTIME_ID \"{runtime_id}\"\n"
+        f"#define KMEDIAASS_CONFIGURATION_SHA256 \"{configuration}\"\n"
     )
 
 
@@ -560,7 +617,7 @@ def compile_probe(
         run(
             tools["c"], "-dynamiclib", "-fPIC", "-target", details["triple"], "-isysroot", sysroot,
             "-I", str(generated), "-I", str(prefix / "include"), str(source),
-            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass",
+            "-L", str(runtime), "-lkmediaffmpeg_avutil",
             "-Wl,-headerpad_max_install_names",
             "-Wl,-install_name,@rpath/libkmediaffmpeg_probe.dylib", "-o", str(output),
         )
@@ -571,7 +628,7 @@ def compile_probe(
         assert tools is not None
         run(
             tools["c"], "-shared", "-fPIC", "-I", str(generated), "-I", str(prefix / "include"),
-            str(source), "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-llog",
+            str(source), "-L", str(runtime), "-lkmediaffmpeg_avutil", "-llog",
             "-Wl,-soname,libkmediaffmpeg_probe.so", "-Wl,-z,relro", "-Wl,-z,now", "-o", str(output),
         )
         return output.name
@@ -582,19 +639,83 @@ def compile_probe(
     if target.startswith("linux-"):
         output = runtime / "libkmediaffmpeg_probe.so"
         run("cc", "-shared", "-fPIC", *includes, "-I", str(java_home / "include/linux"), str(source),
-            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-Wl,-rpath,$ORIGIN",
+            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-Wl,-rpath,$ORIGIN",
             "-Wl,-soname,libkmediaffmpeg_probe.so", "-o", str(output))
     elif target.startswith("macos-"):
         output = runtime / "libkmediaffmpeg_probe.dylib"
         run("cc", "-dynamiclib", "-fPIC", *includes, "-I", str(java_home / "include/darwin"), str(source),
-            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-lkmediaffmpeg_ass", "-Wl,-rpath,@loader_path",
+            "-L", str(runtime), "-lkmediaffmpeg_avutil", "-Wl,-rpath,@loader_path",
             "-Wl,-install_name,@rpath/libkmediaffmpeg_probe.dylib", "-o", str(output))
     else:
         output = runtime / "kmediaffmpeg_probe.dll"
         avutil_import = windows_import_library(prefix, "avutil")
-        ass_import = windows_import_library(prefix, "ass")
         run("cc", "-shared", *includes, "-I", str(java_home / "include/win32"), str(source),
-            str(avutil_import), str(ass_import), "-o", str(output))
+            str(avutil_import), "-o", str(output))
+    return output.name
+
+
+def compile_ass_probe(
+    target: str,
+    runtime: Path,
+    prefix: Path,
+    work: Path,
+    runtime_id: str,
+    configuration: str,
+    tools: dict[str, str] | None,
+    details: dict | None,
+    sysroot: str | None,
+) -> str:
+    generated = work / "generated"
+    generated.mkdir(exist_ok=True)
+    write_ass_identity_header(generated / "ass_runtime_identity.h", runtime_id, configuration)
+    if target.startswith("ios-"):
+        source = ROOT / "native/probe/kmediaass_probe_apple.c"
+        output = runtime / "libkmediaffmpeg_ass_probe.dylib"
+        assert tools is not None and details is not None and sysroot is not None
+        run(
+            tools["c"], "-dynamiclib", "-fPIC", "-target", details["triple"], "-isysroot", sysroot,
+            "-I", str(generated), "-I", str(prefix / "include"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_ass",
+            "-Wl,-headerpad_max_install_names",
+            "-Wl,-install_name,@rpath/libkmediaffmpeg_ass_probe.dylib", "-o", str(output),
+        )
+        return output.name
+    source = ROOT / "native/probe/kmediaass_probe.c"
+    if target.startswith("android-"):
+        output = runtime / "libkmediaffmpeg_ass_probe.so"
+        assert tools is not None
+        run(
+            tools["c"], "-shared", "-fPIC", "-I", str(generated), "-I", str(prefix / "include"),
+            str(source), "-L", str(runtime), "-lkmediaffmpeg_ass", "-llog",
+            "-Wl,-soname,libkmediaffmpeg_ass_probe.so", "-Wl,-z,relro", "-Wl,-z,now",
+            "-o", str(output),
+        )
+        return output.name
+    java_home = desktop_java_home()
+    if not java_home.is_dir():
+        raise ValueError("JAVA_HOME is required to build the desktop JNI probe")
+    includes = ["-I", str(generated), "-I", str(prefix / "include"), "-I", str(java_home / "include")]
+    if target.startswith("linux-"):
+        output = runtime / "libkmediaffmpeg_ass_probe.so"
+        run(
+            "cc", "-shared", "-fPIC", *includes, "-I", str(java_home / "include/linux"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_ass", "-Wl,-rpath,$ORIGIN",
+            "-Wl,-soname,libkmediaffmpeg_ass_probe.so", "-o", str(output),
+        )
+    elif target.startswith("macos-"):
+        output = runtime / "libkmediaffmpeg_ass_probe.dylib"
+        run(
+            "cc", "-dynamiclib", "-fPIC", *includes, "-I", str(java_home / "include/darwin"), str(source),
+            "-L", str(runtime), "-lkmediaffmpeg_ass", "-Wl,-rpath,@loader_path",
+            "-Wl,-install_name,@rpath/libkmediaffmpeg_ass_probe.dylib", "-o", str(output),
+        )
+    else:
+        output = runtime / "kmediaffmpeg_ass_probe.dll"
+        ass_import = windows_import_library(prefix, "ass")
+        run(
+            "cc", "-shared", *includes, "-I", str(java_home / "include/win32"), str(source),
+            str(ass_import), "-o", str(output),
+        )
     return output.name
 
 
@@ -606,6 +727,8 @@ def write_manifest(
     configuration: str,
     runtime: Path,
     libraries: list[str],
+    components: tuple[str, ...] = COMPONENTS,
+    ass_runtime_id: str | None = None,
 ) -> None:
     platform_name = "android" if target.startswith("android-") else target.split("-", 1)[0]
     abi = ANDROID[target]["abi"] if target in ANDROID else "aarch64" if target.endswith("aarch64") else "arm64" if target.startswith("ios-") else "x86_64"
@@ -614,7 +737,9 @@ def write_manifest(
         f"runtimeId={runtime_id}", f"platform={platform_name}", f"abi={abi}",
         f"configurationSha256={configuration}", f"libraries={','.join(libraries)}",
     ]
-    for component in sorted(VERSIONS):
+    if ass_runtime_id is not None:
+        lines.append(f"assRuntimeId={ass_runtime_id}")
+    for component in sorted(components):
         lines.extend([f"version.{component}={VERSIONS[component]}", f"license.{component}={LICENSES[component]}"])
     for library in libraries:
         lines.append(f"sha256.{library}={sha256(runtime / library)}")
@@ -622,14 +747,48 @@ def write_manifest(
     path.write_text("\n".join(lines) + "\n")
 
 
-def copy_sdk(prefix: Path, runtime: Path, output: Path, target: str, manifest: Path) -> None:
+def copy_sdk(
+    prefix: Path,
+    runtime: Path,
+    output: Path,
+    target: str,
+    manifest: Path,
+    ass_manifest: Path | None = None,
+    ass_only: bool = False,
+) -> None:
     sdk = output / "sdk" / target
-    shutil.copytree(prefix / "include", sdk / "include", dirs_exist_ok=True)
+    if ass_only:
+        for directory in ("ass", "freetype2", "fribidi", "harfbuzz"):
+            source = prefix / "include" / directory
+            if source.is_dir():
+                shutil.copytree(source, sdk / "include" / directory, dirs_exist_ok=True)
+    else:
+        shutil.copytree(prefix / "include", sdk / "include", dirs_exist_ok=True)
+    shutil.copyfile(
+        ROOT / "native/probe/KMediaAssRuntime.h",
+        sdk / "include/KMediaAssRuntime.h",
+    )
+    if not ass_only:
+        shutil.copyfile(
+            ROOT / "native/probe/KMediaFfmpegRuntime.h",
+            sdk / "include/KMediaFfmpegRuntime.h",
+        )
     shutil.copytree(runtime, sdk / "lib", dirs_exist_ok=True)
+    ass_import_names = {
+        f"libkmediaffmpeg_{logical}.dll.a" for logical in ASS_LOGICAL_LIBRARIES
+    }
+    ass_pc_names = {
+        "freetype2.pc", "fribidi.pc", "harfbuzz.pc", "harfbuzz-subset.pc", "libass.pc",
+    }
     for source in (prefix / "lib", prefix / "bin"):
         if source.is_dir():
             for pattern in ("*.dll.a", "*.lib", "*.pc"):
                 for path in source.rglob(pattern):
+                    if ass_only and (
+                        (path.suffix == ".pc" and path.name not in ass_pc_names)
+                        or (path.suffix != ".pc" and path.name not in ass_import_names)
+                    ):
+                        continue
                     destination = sdk / ("pkgconfig" if path.suffix == ".pc" else "lib") / path.name
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     if path.suffix == ".pc":
@@ -649,6 +808,8 @@ def copy_sdk(prefix: Path, runtime: Path, output: Path, target: str, manifest: P
                     else:
                         shutil.copyfile(path, destination)
     shutil.copyfile(manifest, sdk / "runtime.properties")
+    if ass_manifest is not None:
+        shutil.copyfile(ass_manifest, sdk / "ass-runtime.properties")
 
 
 def package_ios_frameworks(runtime: Path, output: Path, target: str) -> None:
@@ -656,7 +817,12 @@ def package_ios_frameworks(runtime: Path, output: Path, target: str) -> None:
     frameworks.mkdir(parents=True, exist_ok=True)
     binaries: dict[str, tuple[Path, str]] = {}
     for logical, framework_name in FRAMEWORK_NAMES.items():
-        source_name = "libkmediaffmpeg_probe.dylib" if logical == "probe" else f"libkmediaffmpeg_{logical}.dylib"
+        if logical == "ffmpeg-probe":
+            source_name = "libkmediaffmpeg_probe.dylib"
+        elif logical == "ass-probe":
+            source_name = "libkmediaffmpeg_ass_probe.dylib"
+        else:
+            source_name = f"libkmediaffmpeg_{logical}.dylib"
         source = runtime / source_name
         framework = frameworks / f"{framework_name}.framework"
         headers = framework / "Headers"
@@ -666,8 +832,10 @@ def package_ios_frameworks(runtime: Path, output: Path, target: str) -> None:
         binary = framework / framework_name
         shutil.copyfile(source, binary)
         header_name = framework_name + ".h"
-        if logical == "probe":
+        if logical == "ffmpeg-probe":
             shutil.copyfile(ROOT / "native/probe/KMediaFfmpegRuntime.h", headers / header_name)
+        elif logical == "ass-probe":
+            shutil.copyfile(ROOT / "native/probe/KMediaAssRuntime.h", headers / header_name)
         else:
             (headers / header_name).write_text("#pragma once\n")
         (modules / "module.modulemap").write_text(
@@ -784,18 +952,48 @@ def main() -> int:
     for component in ("freetype", "fribidi", "harfbuzz", "libass"):
         build_meson(component, args.target, sources, builds, prefix, cross, env)
     ffmpeg_args = build_ffmpeg(args.target, sources, prefix, env, tools, details, sysroot)
-    runtime = output / "runtime"
-    library_names = copy_and_rewrite_runtime(prefix, runtime, args.target)
-    runtime_id, configuration = configuration_identity(args.target, ffmpeg_args)
-    probe_name = compile_probe(args.target, runtime, prefix, work, runtime_id, configuration, tools, details, sysroot)
-    libraries = [library_names[name] for name in LOGICAL_LIBRARIES] + [probe_name]
+    combined_runtime = work / "canonical-runtime"
+    library_names = copy_and_rewrite_runtime(prefix, combined_runtime, args.target)
+    ass_runtime_id, ass_configuration = ass_configuration_identity(args.target)
+    runtime_id, configuration = configuration_identity(args.target, ffmpeg_args, ass_runtime_id)
+    ass_probe_name = compile_ass_probe(
+        args.target, combined_runtime, prefix, work, ass_runtime_id, ass_configuration,
+        tools, details, sysroot,
+    )
+    probe_name = compile_probe(
+        args.target, combined_runtime, prefix, work, runtime_id, configuration,
+        tools, details, sysroot,
+    )
+    ass_runtime = output / "ass-runtime"
+    ffmpeg_runtime = output / "ffmpeg-runtime"
+    ass_runtime.mkdir()
+    ffmpeg_runtime.mkdir()
+    ass_libraries = [library_names[name] for name in ASS_LOGICAL_LIBRARIES] + [ass_probe_name]
+    ffmpeg_libraries = [library_names[name] for name in FFMPEG_LOGICAL_LIBRARIES] + [probe_name]
+    for name in ass_libraries:
+        shutil.copyfile(combined_runtime / name, ass_runtime / name)
+    for name in ffmpeg_libraries:
+        shutil.copyfile(combined_runtime / name, ffmpeg_runtime / name)
+    ass_manifest = output / "ass-runtime.properties"
+    write_manifest(
+        ass_manifest, args.target, args.version, ass_runtime_id, ass_configuration,
+        ass_runtime, ass_libraries, ASS_COMPONENTS,
+    )
     manifest = output / "runtime.properties"
-    write_manifest(manifest, args.target, args.version, runtime_id, configuration, runtime, libraries)
-    copy_sdk(prefix, runtime, output, args.target, manifest)
+    write_manifest(
+        manifest, args.target, args.version, runtime_id, configuration,
+        ffmpeg_runtime, ffmpeg_libraries, COMPONENTS, ass_runtime_id,
+    )
+    sdk_runtime = work / "sdk-runtime"
+    shutil.copytree(ass_runtime, sdk_runtime)
+    shutil.copytree(ffmpeg_runtime, sdk_runtime, dirs_exist_ok=True)
+    copy_sdk(prefix, sdk_runtime, output, args.target, manifest, ass_manifest)
+    copy_sdk(prefix, ass_runtime, output / "ass", args.target, ass_manifest, ass_only=True)
     if args.target.startswith("ios-"):
-        package_ios_frameworks(runtime, output, args.target)
+        package_ios_frameworks(combined_runtime, output, args.target)
     write_evidence(output, args.target, ffmpeg_args, signature, downloads, work)
     write_runtime_id(output / "runtime-id.txt", runtime_id)
+    write_runtime_id(output / "ass-runtime-id.txt", ass_runtime_id)
     verification = [
         sys.executable, "-B", str(ROOT / "scripts/verify_native_output.py"),
         "--output", str(output), "--target", args.target,

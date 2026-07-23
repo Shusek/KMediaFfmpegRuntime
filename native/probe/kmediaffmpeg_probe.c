@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
 #include <jni.h>
-#include <ass/ass.h>
 #include <libavutil/avutil.h>
 #include "runtime_identity.h"
 
@@ -31,11 +30,4 @@ JNIEXPORT jstring JNICALL
 Java_io_github_shusek_kmediaffmpeg_runtime_NativeProbe_ffmpegLicense(JNIEnv *env, jclass ignored) {
     (void) ignored;
     return as_string(env, avutil_license());
-}
-
-JNIEXPORT jint JNICALL
-Java_io_github_shusek_kmediaffmpeg_runtime_NativeProbe_libassVersion(JNIEnv *env, jclass ignored) {
-    (void) env;
-    (void) ignored;
-    return ass_library_version();
 }

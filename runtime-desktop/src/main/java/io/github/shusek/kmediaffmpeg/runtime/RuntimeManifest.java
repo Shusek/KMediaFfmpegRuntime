@@ -13,11 +13,17 @@ final class RuntimeManifest {
     static final List<String> COMPONENTS = List.of("ffmpeg", "freetype", "fribidi", "harfbuzz", "libass");
 
     final RuntimeReport report;
+    final String assRuntimeId;
     final List<String> libraries;
     final Map<String, String> hashes;
 
-    private RuntimeManifest(RuntimeReport report, List<String> libraries, Map<String, String> hashes) {
+    private RuntimeManifest(
+            RuntimeReport report,
+            String assRuntimeId,
+            List<String> libraries,
+            Map<String, String> hashes) {
         this.report = report;
+        this.assRuntimeId = assRuntimeId;
         this.libraries = List.copyOf(libraries);
         this.hashes = Map.copyOf(hashes);
     }
@@ -32,7 +38,7 @@ final class RuntimeManifest {
             licenses.put(component, required(properties, "license." + component));
         }
         List<String> libraries = split(required(properties, "libraries"));
-        if (libraries.isEmpty() || libraries.size() > 16 || libraries.stream().distinct().count() != libraries.size()) {
+        if (libraries.size() != 7 || libraries.stream().distinct().count() != libraries.size()) {
             throw new IOException("The native library inventory is invalid.");
         }
         Map<String, String> hashes = new LinkedHashMap<>();
@@ -53,7 +59,8 @@ final class RuntimeManifest {
                 required(properties, "configurationSha256"),
                 versions,
                 licenses);
-        return new RuntimeManifest(report, libraries, hashes);
+        return new RuntimeManifest(
+                report, required(properties, "assRuntimeId"), libraries, hashes);
     }
 
     private static String required(Properties properties, String key) throws IOException {

@@ -17,11 +17,17 @@ final class AndroidRuntimeManifest {
             Collections.unmodifiableList(Arrays.asList("ffmpeg", "freetype", "fribidi", "harfbuzz", "libass"));
 
     final RuntimeReport report;
+    final String assRuntimeId;
     final List<String> libraries;
     final Map<String, String> hashes;
 
-    private AndroidRuntimeManifest(RuntimeReport report, List<String> libraries, Map<String, String> hashes) {
+    private AndroidRuntimeManifest(
+            RuntimeReport report,
+            String assRuntimeId,
+            List<String> libraries,
+            Map<String, String> hashes) {
         this.report = report;
+        this.assRuntimeId = assRuntimeId;
         this.libraries = Collections.unmodifiableList(new ArrayList<>(libraries));
         this.hashes = Collections.unmodifiableMap(new LinkedHashMap<>(hashes));
     }
@@ -41,7 +47,7 @@ final class AndroidRuntimeManifest {
                 libraries.add(item.trim());
             }
         }
-        if (libraries.isEmpty() || new HashSet<>(libraries).size() != libraries.size()) {
+        if (libraries.size() != 7 || new HashSet<>(libraries).size() != libraries.size()) {
             throw new IOException("The Android native library inventory is invalid.");
         }
         Map<String, String> hashes = new LinkedHashMap<>();
@@ -63,6 +69,7 @@ final class AndroidRuntimeManifest {
                         required(properties, "configurationSha256"),
                         versions,
                         licenses),
+                required(properties, "assRuntimeId"),
                 libraries,
                 hashes);
     }

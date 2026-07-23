@@ -7,17 +7,16 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Optional;
-import java.util.Set;
 
 /** Process-wide loader and inspector for the shared desktop native graph. */
 public final class KMediaFfmpegRuntime {
     private static final Object LOCK = new Object();
     private static RuntimeReport current;
+    private static Path currentLibraryDirectory;
     private static KMediaFfmpegRuntimeException terminalFailure;
 
     private KMediaFfmpegRuntime() {}
@@ -31,29 +30,40 @@ public final class KMediaFfmpegRuntime {
                 throw terminalFailure;
             }
             try {
-                PreparedRuntime prepared = source instanceof RuntimeSource.Bundled
-                        ? prepareBundled()
-                        : prepareExternal(((RuntimeSource.ExternalDirectory) source).directory());
+                RuntimeCandidate candidate = source instanceof RuntimeSource.Bundled
+                        ? inspectBundled()
+                        : inspectExternal(((RuntimeSource.ExternalDirectory) source).directory());
                 if (current != null) {
-                    if (!current.runtimeId().equals(prepared.manifest.report.runtimeId())) {
+                    RuntimeReport currentAss = KMediaAssRuntime.currentOrNull();
+                    if (!current.runtimeId().equals(candidate.manifest.report.runtimeId())
+                            || currentAss == null
+                            || !candidate.manifest.assRuntimeId.equals(currentAss.runtimeId())) {
                         throw new KMediaFfmpegRuntimeException(
                                 "A different KMediaFfmpegRuntime is already initialized in this process.");
                     }
                     return current;
                 }
-                verifyPlatform(prepared.manifest.report);
-                for (String library : prepared.manifest.libraries) {
-                    System.load(prepared.libraryDirectory.resolve(library).toAbsolutePath().toString());
+                RuntimeReport assRuntime = KMediaAssRuntime.initialize(source);
+                if (!candidate.manifest.assRuntimeId.equals(assRuntime.runtimeId())) {
+                    throw new KMediaFfmpegRuntimeException(
+                            "KMediaFfmpegRuntime requires a different KMediaAssRuntime ID.");
                 }
-                verifyNativeIdentity(prepared.manifest.report);
-                current = prepared.manifest.report;
+                verifyPlatform(candidate.manifest.report);
+                Path libraryDirectory = KMediaAssRuntime.loadedLibraryDirectory();
+                stageLibraries(candidate, libraryDirectory);
+                for (String library : candidate.manifest.libraries) {
+                    System.load(libraryDirectory.resolve(library).toAbsolutePath().toString());
+                }
+                verifyNativeIdentity(candidate.manifest.report);
+                currentLibraryDirectory = libraryDirectory;
+                current = candidate.manifest.report;
                 return current;
             } catch (KMediaFfmpegRuntimeException error) {
                 if (current == null) {
                     terminalFailure = error;
                 }
                 throw error;
-            } catch (Exception error) {
+            } catch (Exception | LinkageError error) {
                 terminalFailure = new KMediaFfmpegRuntimeException("The shared native runtime could not be initialized.", error);
                 throw terminalFailure;
             }
@@ -66,7 +76,16 @@ public final class KMediaFfmpegRuntime {
         }
     }
 
-    private static PreparedRuntime prepareExternal(File root) throws IOException {
+    static Path loadedLibraryDirectory() {
+        synchronized (LOCK) {
+            if (currentLibraryDirectory == null) {
+                throw new IllegalStateException("KMediaFfmpegRuntime is not initialized.");
+            }
+            return currentLibraryDirectory;
+        }
+    }
+
+    private static RuntimeCandidate inspectExternal(File root) throws IOException {
         Path realRoot = root.toPath().toRealPath(LinkOption.NOFOLLOW_LINKS);
         if (!Files.isDirectory(realRoot, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("The external runtime root is not a real directory.");
@@ -77,10 +96,10 @@ public final class KMediaFfmpegRuntime {
         }
         Path libraryDirectory = realRoot.resolve("lib");
         validateLibraries(libraryDirectory, manifest);
-        return new PreparedRuntime(libraryDirectory, manifest);
+        return new RuntimeCandidate(libraryDirectory, null, manifest);
     }
 
-    private static PreparedRuntime prepareBundled() throws IOException {
+    private static RuntimeCandidate inspectBundled() throws IOException {
         String classifier = platformClassifier();
         String base = "/META-INF/kmediaffmpeg/native/" + classifier + "/";
         RuntimeManifest manifest;
@@ -90,33 +109,40 @@ public final class KMediaFfmpegRuntime {
             }
             manifest = RuntimeManifest.read(input);
         }
-        Path root = Files.createTempDirectory("kmediaffmpeg-" + ProcessHandle.current().pid() + "-");
-        tighten(root);
-        Path libraries = Files.createDirectory(root.resolve("lib"));
-        tighten(libraries);
-        for (String library : manifest.libraries) {
-            Path output = libraries.resolve(library);
-            try (InputStream input = KMediaFfmpegRuntime.class.getResourceAsStream(base + "lib/" + library)) {
-                if (input == null) {
-                    throw new IOException("A bundled native library is missing: " + library);
+        return new RuntimeCandidate(null, base, manifest);
+    }
+
+    private static void stageLibraries(RuntimeCandidate candidate, Path libraryDirectory)
+            throws IOException {
+        Path realDirectory = libraryDirectory.toRealPath(LinkOption.NOFOLLOW_LINKS);
+        if (!Files.isDirectory(realDirectory, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("The shared process runtime directory is missing.");
+        }
+        for (String library : candidate.manifest.libraries) {
+            Path output = realDirectory.resolve(library);
+            if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("The FFmpeg runtime collides with the ASS runtime inventory.");
+            }
+            if (candidate.sourceLibraryDirectory != null) {
+                Files.copy(candidate.sourceLibraryDirectory.resolve(library), output);
+            } else {
+                try (InputStream input =
+                        KMediaFfmpegRuntime.class.getResourceAsStream(
+                                candidate.resourceBase + "lib/" + library)) {
+                    if (input == null) {
+                        throw new IOException("A bundled native library is missing: " + library);
+                    }
+                    Files.copy(input, output);
                 }
-                Files.copy(input, output);
             }
         }
-        validateLibraries(libraries, manifest);
-        return new PreparedRuntime(libraries, manifest);
+        validateLibraries(realDirectory, candidate.manifest);
     }
 
     private static void validateLibraries(Path directory, RuntimeManifest manifest) throws IOException {
         Path realDirectory = directory.toRealPath(LinkOption.NOFOLLOW_LINKS);
         if (!Files.isDirectory(realDirectory, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("The runtime library directory is missing.");
-        }
-        try (var entries = Files.list(realDirectory)) {
-            var names = entries.map(path -> path.getFileName().toString()).collect(java.util.stream.Collectors.toSet());
-            if (!names.equals(Set.copyOf(manifest.libraries))) {
-                throw new IOException("The runtime library inventory differs from its manifest.");
-            }
         }
         for (String library : manifest.libraries) {
             Path file = realDirectory.resolve(library);
@@ -141,8 +167,7 @@ public final class KMediaFfmpegRuntime {
         if (!report.runtimeId().equals(NativeProbe.runtimeId())
                 || !report.configurationSha256().equals(NativeProbe.configurationSha256())
                 || !report.componentVersions().get("ffmpeg").equals(NativeProbe.ffmpegVersion())
-                || !NativeProbe.ffmpegLicense().startsWith("LGPL version 2.1")
-                || NativeProbe.libassVersion() <= 0) {
+                || !NativeProbe.ffmpegLicense().startsWith("LGPL version 2.1")) {
             throw new KMediaFfmpegRuntimeException("The loaded native graph differs from its manifest.");
         }
     }
@@ -176,16 +201,6 @@ public final class KMediaFfmpegRuntime {
         }
     }
 
-    private static void tighten(Path directory) {
-        try {
-            Files.setPosixFilePermissions(directory, Set.of(
-                    PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.OWNER_WRITE,
-                    PosixFilePermission.OWNER_EXECUTE));
-        } catch (UnsupportedOperationException | IOException ignored) {
-            // Windows ACLs are inherited from the user-owned temporary directory.
-        }
-    }
-
-    private record PreparedRuntime(Path libraryDirectory, RuntimeManifest manifest) {}
+    private record RuntimeCandidate(
+            Path sourceLibraryDirectory, String resourceBase, RuntimeManifest manifest) {}
 }

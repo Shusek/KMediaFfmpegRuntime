@@ -29,7 +29,7 @@ extensions.configure<LibraryExtension> {
         targetCompatibility = JavaVersion.VERSION_17
     }
     sourceSets.named("main") {
-        java.srcDir(rootProject.file("runtime-shared/src/main/java").absolutePath)
+        java.srcDir(rootProject.file("runtime-ffmpeg-shared/src/main/java").absolutePath)
         resources.srcDir(layout.buildDirectory.dir("generated/runtime-resources").get().asFile.absolutePath)
         jniLibs.srcDir(
             (nativePayloadDirectory.orNull?.resolve("jni")
@@ -41,6 +41,7 @@ extensions.configure<LibraryExtension> {
 }
 
 dependencies {
+    api(project(":kmedia-ass-runtime-android"))
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
@@ -84,8 +85,8 @@ val validateAndroidPayload =
             }
             expectedAbis.forEach { abi ->
                 val libraries = jni.resolve(abi).listFiles().orEmpty().filter(File::isFile).map(File::getName).toSet()
-                require(libraries.size == 11 && libraries.all { it.matches(Regex("libkmediaffmpeg_[A-Za-z0-9_.-]+\\.so")) }) {
-                    "$abi must contain exactly the eleven shared runtime libraries."
+                require(libraries.size == 7 && libraries.all { it.matches(Regex("libkmediaffmpeg_[A-Za-z0-9_.-]+\\.so")) }) {
+                    "$abi must contain exactly the seven FFmpeg runtime libraries."
                 }
                 require(payload.resolve("manifests/$abi/runtime.properties").isFile) { "$abi manifest is missing." }
             }
@@ -122,15 +123,11 @@ afterEvaluate {
                 }
                 pom {
                     name.set("KMedia FFmpeg Runtime for Android")
-                    description.set("Shared, audited and replaceable FFmpeg 8.1.2 plus libass Android runtime.")
+                    description.set("Shared, audited and replaceable FFmpeg 8.1.2 Android runtime.")
                     url.set("https://github.com/Shusek/KMediaFfmpegRuntime")
                     inceptionYear.set("2026")
                     licenses {
                         license { name.set("GNU Lesser General Public License, version 2.1 or later (runtime and FFmpeg)"); url.set("https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html"); distribution.set("repo") }
-                        license { name.set("GNU Lesser General Public License, version 2.1 or later (FriBidi)"); url.set("https://github.com/fribidi/fribidi/blob/v1.0.16/COPYING"); distribution.set("repo") }
-                        license { name.set("ISC License (libass)"); url.set("https://github.com/libass/libass/blob/0.17.4/COPYING"); distribution.set("repo") }
-                        license { name.set("FreeType License"); url.set("https://freetype.org/license.html"); distribution.set("repo") }
-                        license { name.set("MIT License (HarfBuzz)"); url.set("https://github.com/harfbuzz/harfbuzz/blob/12.2.0/COPYING"); distribution.set("repo") }
                     }
                     developers { developer { id.set("Shusek"); name.set("Shusek") } }
                     scm {

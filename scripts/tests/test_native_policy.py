@@ -82,6 +82,12 @@ class NativePolicyTest(unittest.TestCase):
         self.assertEqual(android[0], linux[0])
         self.assertNotEqual(android[1], linux[1])
 
+    def test_ass_runtime_identity_is_release_wide_and_configuration_is_target_specific(self):
+        android = BUILD.ass_configuration_identity("android-arm64-v8a")
+        linux = BUILD.ass_configuration_identity("linux-x86_64")
+        self.assertEqual(android[0], linux[0])
+        self.assertNotEqual(android[1], linux[1])
+
     def test_runtime_id_is_always_ascii_lf(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "runtime-id.txt"
@@ -153,6 +159,33 @@ class NativePolicyTest(unittest.TestCase):
                 )
             command = invoke.call_args.args
             self.assertIn(str(avutil_import), command)
+            self.assertNotIn(str(ass_import), command)
+            self.assertNotIn("-L", command)
+
+    def test_windows_ass_probe_links_only_against_ass_import_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            prefix = root / "prefix"
+            work = root / "work"
+            java = root / "java"
+            runtime.mkdir()
+            (prefix / "include").mkdir(parents=True)
+            (prefix / "lib").mkdir()
+            ass_import = prefix / "lib/libkmediaffmpeg_ass.dll.a"
+            ass_import.touch()
+            work.mkdir()
+            (java / "include/win32").mkdir(parents=True)
+            with (
+                mock.patch.object(BUILD.platform, "system", return_value="Windows"),
+                mock.patch.dict(BUILD.os.environ, {"JAVA_HOME": str(java)}),
+                mock.patch.object(BUILD, "run") as invoke,
+            ):
+                BUILD.compile_ass_probe(
+                    "windows-x86_64", runtime, prefix, work, "runtime-id", "configuration",
+                    None, None, None,
+                )
+            command = invoke.call_args.args
             self.assertIn(str(ass_import), command)
             self.assertNotIn("-L", command)
 

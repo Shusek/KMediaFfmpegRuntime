@@ -19,7 +19,7 @@ java {
 }
 
 sourceSets.main {
-    java.srcDir(rootProject.layout.projectDirectory.dir("runtime-shared/src/main/java"))
+    java.srcDir(rootProject.layout.projectDirectory.dir("runtime-ffmpeg-shared/src/main/java"))
 }
 
 tasks.withType<JavaCompile>().configureEach {
@@ -32,9 +32,13 @@ tasks.withType<Test>().configureEach {
     rootProject.providers.gradleProperty("kmediaFfmpegTestRuntime").orNull?.let { runtime ->
         systemProperty("kmediaFfmpegTestRuntime", runtime)
     }
+    rootProject.providers.gradleProperty("kmediaFfmpegTestBundled").orNull?.let { bundled ->
+        systemProperty("kmediaFfmpegTestBundled", bundled)
+    }
 }
 
 dependencies {
+    api(project(":kmedia-ass-runtime-desktop"))
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
@@ -143,15 +147,11 @@ publishing {
 
 fun MavenPom.commonPom(displayName: String) {
     name.set(displayName)
-    description.set("Shared, audited and replaceable FFmpeg 8.1.2 plus libass native runtime.")
+    description.set("Shared, audited and replaceable FFmpeg 8.1.2 native runtime.")
     url.set("https://github.com/Shusek/KMediaFfmpegRuntime")
     inceptionYear.set("2026")
     licenses {
         license { name.set("GNU Lesser General Public License, version 2.1 or later (runtime and FFmpeg)"); url.set("https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html"); distribution.set("repo") }
-        license { name.set("GNU Lesser General Public License, version 2.1 or later (FriBidi)"); url.set("https://github.com/fribidi/fribidi/blob/v1.0.16/COPYING"); distribution.set("repo") }
-        license { name.set("ISC License (libass)"); url.set("https://github.com/libass/libass/blob/0.17.4/COPYING"); distribution.set("repo") }
-        license { name.set("FreeType License"); url.set("https://freetype.org/license.html"); distribution.set("repo") }
-        license { name.set("MIT License (HarfBuzz)"); url.set("https://github.com/harfbuzz/harfbuzz/blob/12.2.0/COPYING"); distribution.set("repo") }
     }
     developers { developer { id.set("Shusek"); name.set("Shusek") } }
     scm {

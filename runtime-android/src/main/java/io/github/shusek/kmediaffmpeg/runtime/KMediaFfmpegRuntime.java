@@ -46,6 +46,11 @@ public final class KMediaFfmpegRuntime {
                 PreparedRuntime prepared = source instanceof RuntimeSource.Bundled
                         ? prepareBundled(selectedAbi())
                         : prepareExternal(((RuntimeSource.ExternalDirectory) source).directory());
+                RuntimeReport assRuntime = KMediaAssRuntime.initialize(source);
+                if (!prepared.manifest.assRuntimeId.equals(assRuntime.runtimeId())) {
+                    throw new KMediaFfmpegRuntimeException(
+                            "KMediaFfmpegRuntime requires a different KMediaAssRuntime ID.");
+                }
                 if (current != null) {
                     if (!current.runtimeId().equals(prepared.manifest.report.runtimeId())) {
                         throw new KMediaFfmpegRuntimeException(
@@ -117,17 +122,6 @@ public final class KMediaFfmpegRuntime {
 
     private static void verifyExternalFiles(File root, AndroidRuntimeManifest manifest) throws IOException {
         File directory = canonicalRealDirectory(root);
-        File[] entries = directory.listFiles();
-        if (entries == null) {
-            throw new IOException("The external Android library directory is unreadable.");
-        }
-        java.util.HashSet<String> names = new java.util.HashSet<>();
-        for (File entry : entries) {
-            names.add(entry.getName());
-        }
-        if (!names.equals(new HashSet<>(manifest.libraries))) {
-            throw new IOException("The external Android library inventory differs from its manifest.");
-        }
         for (String library : manifest.libraries) {
             File file = new File(directory, library);
             if (!file.isFile() || !file.getCanonicalFile().equals(file.getAbsoluteFile())
@@ -141,8 +135,7 @@ public final class KMediaFfmpegRuntime {
         if (!report.runtimeId().equals(NativeProbe.runtimeId())
                 || !report.configurationSha256().equals(NativeProbe.configurationSha256())
                 || !report.componentVersions().get("ffmpeg").equals(NativeProbe.ffmpegVersion())
-                || !NativeProbe.ffmpegLicense().startsWith("LGPL version 2.1")
-                || NativeProbe.libassVersion() <= 0) {
+                || !NativeProbe.ffmpegLicense().startsWith("LGPL version 2.1")) {
             throw new KMediaFfmpegRuntimeException("The loaded native graph differs from its signed manifest.");
         }
     }

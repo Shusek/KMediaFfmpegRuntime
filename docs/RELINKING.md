@@ -2,17 +2,19 @@
 
 # Replacement and relinking
 
-Every release contains a corresponding-source archive and per-target SDK.
-Rebuild the runtime with the documented target command, preserving the public
-SONAME/framework names and ABI manifest. A compatible replacement receives a
-new `runtimeId` derived from its canonical manifest and library hashes.
+Every release contains a corresponding-source archive and per-target SDKs for
+the ASS and FFmpeg scopes. Rebuild either scope with the documented target
+command, preserving its public SONAME/framework names and ABI manifest. A
+compatible ASS replacement receives a new `assRuntimeId`; an FFmpeg replacement
+receives a new `runtimeId` bound to the selected ASS runtime.
 
-On Android, replace the `jni/<abi>/libkmediaffmpeg_*` files in the AAR and
-rebuild/sign the application. On desktop, select an application-controlled
-directory with `RuntimeSource.externalDirectory`; it must contain the closed
-manifest and exact library inventory. On Apple platforms, replace the dynamic
+On Android, replace the applicable `jni/<abi>/libkmediaffmpeg_*` files in the
+ASS or FFmpeg AAR and rebuild/sign the application. On desktop, select an
+application-controlled combined SDK directory with
+`RuntimeSource.externalDirectory`; it must contain both manifests and the
+required libraries. On Apple platforms, replace the applicable dynamic
 XCFramework slices before the consuming application is signed.
 
-The runtime never downloads executable code. Loading two different runtime IDs
-in one process is rejected because native loaders cannot safely unload and
-replace an already resolved FFmpeg graph.
+The runtime never downloads executable code. Loading two different ASS or
+FFmpeg runtime IDs in one process is rejected because native loaders cannot
+safely unload and replace an already resolved graph.
