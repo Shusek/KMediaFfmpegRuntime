@@ -70,7 +70,7 @@ jobs:
           fi
           revision="$(git rev-parse HEAD)"
           test "$TESTED_COMMIT" = "$revision"
-          [[ "$TESTED_RUNTIME_ID" =~ ^kmediaffmpeg-8\.1\.2-ass-0\.17\.4-[0-9a-f]{16}$ ]]
+          [[ "$TESTED_RUNTIME_ID" =~ ^kmediaffmpeg-8\.1\.2-ass-0\.17\.5-[0-9a-f]{16}$ ]]
           [[ "$LOCAL_REPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
           echo "value=$revision" >> "$GITHUB_OUTPUT"
           echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
@@ -217,20 +217,29 @@ jobs:
           python3 -B scripts/assemble_payloads.py apple \
             --device "$RUNNER_TEMP/output-ios-arm64" \
             --simulator "$RUNNER_TEMP/output-ios-simulator-arm64" \
-            --output "$RUNNER_TEMP/apple-payload" \
-            --podspec "$RUNNER_TEMP/KMediaFfmpegRuntime.podspec" \
+            --ass-output "$RUNNER_TEMP/apple-ass-payload" \
+            --ffmpeg-output "$RUNNER_TEMP/apple-ffmpeg-payload" \
+            --ass-podspec "$RUNNER_TEMP/KMediaAssRuntime.podspec" \
+            --ffmpeg-podspec "$RUNNER_TEMP/KMediaFfmpegRuntime.podspec" \
             --version "$RELEASE_VERSION"
           python3 -B scripts/assemble_payloads.py package-apple \
-            --source "$RUNNER_TEMP/apple-payload" \
+            --source "$RUNNER_TEMP/apple-ffmpeg-payload" \
             --archive "$RUNNER_TEMP/kmedia-ffmpeg-runtime-$RELEASE_VERSION-apple-xcframeworks.zip" \
             --podspec "$RUNNER_TEMP/KMediaFfmpegRuntime.podspec" \
+            --epoch "${{ needs.readiness.outputs.epoch }}"
+          python3 -B scripts/assemble_payloads.py package-apple \
+            --source "$RUNNER_TEMP/apple-ass-payload" \
+            --archive "$RUNNER_TEMP/kmedia-ass-runtime-$RELEASE_VERSION-apple-xcframeworks.zip" \
+            --podspec "$RUNNER_TEMP/KMediaAssRuntime.podspec" \
             --epoch "${{ needs.readiness.outputs.epoch }}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: apple-release
           path: |
             ${{ runner.temp }}/kmedia-ffmpeg-runtime-${{ inputs.version }}-apple-xcframeworks.zip
+            ${{ runner.temp }}/kmedia-ass-runtime-${{ inputs.version }}-apple-xcframeworks.zip
             ${{ runner.temp }}/KMediaFfmpegRuntime.podspec
+            ${{ runner.temp }}/KMediaAssRuntime.podspec
             ${{ runner.temp }}/output-ios-arm64
             ${{ runner.temp }}/output-ios-simulator-arm64
           if-no-files-found: error
@@ -268,13 +277,15 @@ jobs:
           python3 scripts/assemble_payloads.py android \
             --arm64 "$RUNNER_TEMP/native/native-android-arm64-v8a" \
             --armv7 "$RUNNER_TEMP/native/native-android-armeabi-v7a" \
-            --output "$RUNNER_TEMP/android-payload"
+            --ass-output "$RUNNER_TEMP/android-ass-payload" \
+            --ffmpeg-output "$RUNNER_TEMP/android-ffmpeg-payload"
           python3 scripts/assemble_payloads.py desktop \
             --target "linux-x86_64=$RUNNER_TEMP/native/native-linux-x86_64" \
             --target "linux-aarch64=$RUNNER_TEMP/native/native-linux-aarch64" \
             --target "macos-aarch64=$RUNNER_TEMP/native/native-macos-aarch64" \
             --target "windows-x86_64=$RUNNER_TEMP/native/native-windows-x86_64" \
-            --output "$RUNNER_TEMP/desktop-payload"
+            --ass-output "$RUNNER_TEMP/desktop-ass-payload" \
+            --ffmpeg-output "$RUNNER_TEMP/desktop-ffmpeg-payload"
       - name: Build corresponding source and SBOM
         run: |
           python3 scripts/assemble_payloads.py source \
@@ -295,23 +306,48 @@ jobs:
             tar --sort=name --mtime="@${{ needs.readiness.outputs.epoch }}" \
               --owner=0 --group=0 --numeric-owner -czf \
               "$RUNNER_TEMP/kmedia-ffmpeg-runtime-$RELEASE_VERSION-$target-sdk.tar.gz" \
-              -C "$source" sdk runtime runtime.properties runtime-id.txt compliance
+              -C "$source" sdk ass-runtime ffmpeg-runtime \
+                ass-runtime.properties runtime.properties \
+                ass-runtime-id.txt runtime-id.txt compliance
+            tar --sort=name --mtime="@${{ needs.readiness.outputs.epoch }}" \
+              --owner=0 --group=0 --numeric-owner -czf \
+              "$RUNNER_TEMP/kmedia-ass-runtime-$RELEASE_VERSION-$target-sdk.tar.gz" \
+              -C "$source/ass" sdk \
+              -C "$source" ass-runtime ass-runtime.properties ass-runtime-id.txt compliance
           done
           for target in ios-arm64 ios-simulator-arm64; do
             source="$RUNNER_TEMP/apple/output-$target"
             tar --sort=name --mtime="@${{ needs.readiness.outputs.epoch }}" \
               --owner=0 --group=0 --numeric-owner -czf \
               "$RUNNER_TEMP/kmedia-ffmpeg-runtime-$RELEASE_VERSION-$target-sdk.tar.gz" \
-              -C "$source" sdk runtime Frameworks runtime.properties runtime-id.txt compliance
+              -C "$source" sdk ass-runtime ffmpeg-runtime Frameworks \
+                ass-runtime.properties runtime.properties \
+                ass-runtime-id.txt runtime-id.txt compliance
+            tar --sort=name --mtime="@${{ needs.readiness.outputs.epoch }}" \
+              --owner=0 --group=0 --numeric-owner -czf \
+              "$RUNNER_TEMP/kmedia-ass-runtime-$RELEASE_VERSION-$target-sdk.tar.gz" \
+              -C "$source/ass" sdk Frameworks \
+              -C "$source" ass-runtime ass-runtime.properties ass-runtime-id.txt compliance
           done
-      - name: Stage both public Maven coordinates
+      - name: Stage all four public Maven coordinates
         run: |
+          ./gradlew --no-daemon --rerun-tasks \
+            -PassNativePayloadDirectory="$RUNNER_TEMP/desktop-ass-payload" \
+            -PnativePayloadDirectory="$RUNNER_TEMP/desktop-ffmpeg-payload" \
+            -PkmediaAssTestBundled=true \
+            -PkmediaFfmpegTestBundled=true \
+            :kmedia-ass-runtime-desktop:test \
+            :kmedia-ffmpeg-runtime-desktop:test
           ./gradlew --no-daemon \
             -PpublicationVersion="$RELEASE_VERSION" \
-            -PandroidNativePayloadDirectory="$RUNNER_TEMP/android-payload" \
-            -PnativePayloadDirectory="$RUNNER_TEMP/desktop-payload" \
+            -PandroidAssNativePayloadDirectory="$RUNNER_TEMP/android-ass-payload" \
+            -PandroidNativePayloadDirectory="$RUNNER_TEMP/android-ffmpeg-payload" \
+            -PassNativePayloadDirectory="$RUNNER_TEMP/desktop-ass-payload" \
+            -PnativePayloadDirectory="$RUNNER_TEMP/desktop-ffmpeg-payload" \
             -PcorrespondingSourceArchive="$RUNNER_TEMP/kmedia-ffmpeg-runtime-$RELEASE_VERSION-corresponding-source.tar.gz" \
             -PreleaseRepository="$RUNNER_TEMP/maven" \
+            :kmedia-ass-runtime-android:publishAllPublicationsToReleaseRepository \
+            :kmedia-ass-runtime-desktop:publishAllPublicationsToReleaseRepository \
             :kmedia-ffmpeg-runtime-android:publishAllPublicationsToReleaseRepository \
             :kmedia-ffmpeg-runtime-desktop:publishAllPublicationsToReleaseRepository
           python3 scripts/build_maven_central_bundle.py normalize \
@@ -324,8 +360,11 @@ jobs:
         run: |
           mkdir "$RUNNER_TEMP/assets"
           cp "$RUNNER_TEMP"/kmedia-ffmpeg-runtime-$RELEASE_VERSION-* "$RUNNER_TEMP/assets/"
+          cp "$RUNNER_TEMP"/kmedia-ass-runtime-$RELEASE_VERSION-* "$RUNNER_TEMP/assets/"
           cp "$RUNNER_TEMP/apple/kmedia-ffmpeg-runtime-$RELEASE_VERSION-apple-xcframeworks.zip" "$RUNNER_TEMP/assets/"
+          cp "$RUNNER_TEMP/apple/kmedia-ass-runtime-$RELEASE_VERSION-apple-xcframeworks.zip" "$RUNNER_TEMP/assets/"
           cp "$RUNNER_TEMP/apple/KMediaFfmpegRuntime.podspec" "$RUNNER_TEMP/assets/"
+          cp "$RUNNER_TEMP/apple/KMediaAssRuntime.podspec" "$RUNNER_TEMP/assets/"
           cp docs/RELINKING.md docs/LICENSING.md "$RUNNER_TEMP/assets/"
           (cd "$RUNNER_TEMP/assets" && sha256sum * > SHA256SUMS)
       - name: Create immutable GitHub Release

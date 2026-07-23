@@ -70,9 +70,29 @@ jobs:
             --output "$RUNNER_TEMP/native-output"
           ./gradlew --no-daemon \
             -PkmediaFfmpegDesktopOnly=true \
+            -PkmediaAssTestRuntime="$RUNNER_TEMP/native-output/sdk/macos-aarch64" \
             -PkmediaFfmpegTestRuntime="$RUNNER_TEMP/native-output/sdk/macos-aarch64" \
-            :kmedia-ffmpeg-runtime-desktop:test \
-            --tests io.github.shusek.kmediaffmpeg.runtime.NativeRuntimeIntegrationTest
+            :kmedia-ass-runtime-desktop:test \
+            :kmedia-ffmpeg-runtime-desktop:test
+          mkdir -p \
+            "$RUNNER_TEMP/ass-payload/resources/META-INF/kmediaass/native/macos-aarch64/lib" \
+            "$RUNNER_TEMP/ffmpeg-payload/resources/META-INF/kmediaffmpeg/native/macos-aarch64/lib"
+          cp "$RUNNER_TEMP/native-output/ass-runtime/"* \
+            "$RUNNER_TEMP/ass-payload/resources/META-INF/kmediaass/native/macos-aarch64/lib/"
+          cp "$RUNNER_TEMP/native-output/ass-runtime.properties" \
+            "$RUNNER_TEMP/ass-payload/resources/META-INF/kmediaass/native/macos-aarch64/"
+          cp "$RUNNER_TEMP/native-output/ffmpeg-runtime/"* \
+            "$RUNNER_TEMP/ffmpeg-payload/resources/META-INF/kmediaffmpeg/native/macos-aarch64/lib/"
+          cp "$RUNNER_TEMP/native-output/runtime.properties" \
+            "$RUNNER_TEMP/ffmpeg-payload/resources/META-INF/kmediaffmpeg/native/macos-aarch64/"
+          ./gradlew --no-daemon --rerun-tasks \
+            -PkmediaFfmpegDesktopOnly=true \
+            -PassNativePayloadDirectory="$RUNNER_TEMP/ass-payload" \
+            -PnativePayloadDirectory="$RUNNER_TEMP/ffmpeg-payload" \
+            -PkmediaAssTestBundled=true \
+            -PkmediaFfmpegTestBundled=true \
+            :kmedia-ass-runtime-desktop:test \
+            :kmedia-ffmpeg-runtime-desktop:test
 
   native-windows-smoke:
     runs-on: windows-2022

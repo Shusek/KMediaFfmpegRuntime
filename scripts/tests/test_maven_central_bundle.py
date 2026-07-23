@@ -32,7 +32,7 @@ class MavenCentralBundleTest(unittest.TestCase):
             root = Path(value)
             version = "0.1.0-rc.1"
             self.create_staging(root, version)
-            self.assertEqual(10, len(central.base_files(root, version)))
+            self.assertEqual(20, len(central.base_files(root, version)))
 
     def test_normalize_removes_only_gradle_generated_files(self) -> None:
         with tempfile.TemporaryDirectory() as value:
@@ -51,7 +51,7 @@ class MavenCentralBundleTest(unittest.TestCase):
                         for suffix in central.GENERATED_CHECKSUM_SUFFIXES:
                             path.with_name(path.name + suffix).write_bytes(b"generated")
             central.normalize(type("Arguments", (), {"staging": root, "version": version})())
-            self.assertEqual(10, len(central.base_files(root, version)))
+            self.assertEqual(20, len(central.base_files(root, version)))
             actual = {path for path in (root / central.GROUP).rglob("*") if path.is_file()}
             self.assertEqual(set(central.required_files(root, version)), actual)
 

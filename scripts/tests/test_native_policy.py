@@ -82,6 +82,12 @@ class NativePolicyTest(unittest.TestCase):
         self.assertEqual(android[0], linux[0])
         self.assertNotEqual(android[1], linux[1])
 
+    def test_ass_runtime_identity_is_release_wide_and_configuration_is_target_specific(self):
+        android = BUILD.ass_configuration_identity("android-arm64-v8a")
+        linux = BUILD.ass_configuration_identity("linux-x86_64")
+        self.assertEqual(android[0], linux[0])
+        self.assertNotEqual(android[1], linux[1])
+
     def test_runtime_id_is_always_ascii_lf(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "runtime-id.txt"
@@ -116,6 +122,27 @@ class NativePolicyTest(unittest.TestCase):
         self.assertIn("id: setup_java", workflow)
         self.assertIn("JAVA_HOME: ${{ steps.setup_java.outputs.path }}", workflow)
         self.assertIn("| tr -d '\\r' | sort -u", workflow)
+
+    def test_release_packages_ass_frameworks_only_in_ios_sdk_archives(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        sdk_packaging = workflow.split(
+            "      - name: Package every public SDK with its ABI manifest and evidence",
+            maxsplit=1,
+        )[1].split(
+            "      - name: Stage all four public Maven coordinates",
+            maxsplit=1,
+        )[0]
+        non_apple_sdks, apple_sdks = sdk_packaging.split(
+            "          for target in ios-arm64 ios-simulator-arm64; do",
+            maxsplit=1,
+        )
+        non_apple_ass_archive = non_apple_sdks.rsplit(
+            '              "$RUNNER_TEMP/kmedia-ass-runtime-$RELEASE_VERSION-$target-sdk.tar.gz"',
+            maxsplit=1,
+        )[1]
+        self.assertIn('-C "$source/ass" sdk \\', non_apple_ass_archive)
+        self.assertNotIn('-C "$source/ass" sdk Frameworks \\', non_apple_ass_archive)
+        self.assertIn('-C "$source/ass" sdk Frameworks \\', apple_sdks)
 
     def test_desktop_java_home_uses_explicit_path_when_msys_hides_javac(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -153,6 +180,33 @@ class NativePolicyTest(unittest.TestCase):
                 )
             command = invoke.call_args.args
             self.assertIn(str(avutil_import), command)
+            self.assertNotIn(str(ass_import), command)
+            self.assertNotIn("-L", command)
+
+    def test_windows_ass_probe_links_only_against_ass_import_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            prefix = root / "prefix"
+            work = root / "work"
+            java = root / "java"
+            runtime.mkdir()
+            (prefix / "include").mkdir(parents=True)
+            (prefix / "lib").mkdir()
+            ass_import = prefix / "lib/libkmediaffmpeg_ass.dll.a"
+            ass_import.touch()
+            work.mkdir()
+            (java / "include/win32").mkdir(parents=True)
+            with (
+                mock.patch.object(BUILD.platform, "system", return_value="Windows"),
+                mock.patch.dict(BUILD.os.environ, {"JAVA_HOME": str(java)}),
+                mock.patch.object(BUILD, "run") as invoke,
+            ):
+                BUILD.compile_ass_probe(
+                    "windows-x86_64", runtime, prefix, work, "runtime-id", "configuration",
+                    None, None, None,
+                )
+            command = invoke.call_args.args
             self.assertIn(str(ass_import), command)
             self.assertNotIn("-L", command)
 

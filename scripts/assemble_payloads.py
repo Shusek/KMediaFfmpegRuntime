@@ -16,12 +16,16 @@ import zipfile
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DESKTOP = ("linux-x86_64", "linux-aarch64", "macos-aarch64", "windows-x86_64")
-APPLE_FRAMEWORKS = (
+APPLE_FFMPEG_FRAMEWORKS = (
     "KMediaFfmpegAvcodec", "KMediaFfmpegAvfilter", "KMediaFfmpegAvformat",
     "KMediaFfmpegAvutil", "KMediaFfmpegSwresample", "KMediaFfmpegSwscale",
+    "KMediaFfmpegRuntime",
+)
+APPLE_ASS_FRAMEWORKS = (
     "KMediaFfmpegFreetype", "KMediaFfmpegFribidi", "KMediaFfmpegHarfbuzz",
-    "KMediaFfmpegAss", "KMediaFfmpegRuntime",
+    "KMediaFfmpegAss", "KMediaAssRuntime",
 )
 
 
@@ -41,30 +45,43 @@ def copy_real_tree(source: Path, destination: Path) -> None:
 
 
 def assemble_android(arguments: argparse.Namespace) -> None:
-    clean_destination(arguments.output)
+    clean_destination(arguments.ass_output)
+    clean_destination(arguments.ffmpeg_output)
     for abi, source in (("arm64-v8a", arguments.arm64), ("armeabi-v7a", arguments.armv7)):
-        copy_real_tree(source / "runtime", arguments.output / "jni" / abi)
-        manifest = source / "runtime.properties"
-        if not manifest.is_file():
-            raise ValueError(f"{abi} manifest is missing")
-        destination = arguments.output / "manifests" / abi
-        destination.mkdir(parents=True)
-        shutil.copyfile(manifest, destination / "runtime.properties")
-    actual = {path.name for path in (arguments.output / "jni").iterdir()}
-    if actual != {"arm64-v8a", "armeabi-v7a"}:
-        raise ValueError("Android assembler produced an invalid ABI set")
+        copy_real_tree(source / "ass-runtime", arguments.ass_output / "jni" / abi)
+        copy_real_tree(source / "ffmpeg-runtime", arguments.ffmpeg_output / "jni" / abi)
+        manifests = (
+            (arguments.ass_output, "ass-runtime.properties"),
+            (arguments.ffmpeg_output, "runtime.properties"),
+        )
+        for destination_root, name in manifests:
+            manifest = source / name
+            if not manifest.is_file():
+                raise ValueError(f"{abi} {name} is missing")
+            destination = destination_root / "manifests" / abi
+            destination.mkdir(parents=True)
+            shutil.copyfile(manifest, destination / name)
+    for output in (arguments.ass_output, arguments.ffmpeg_output):
+        actual = {path.name for path in (output / "jni").iterdir()}
+        if actual != {"arm64-v8a", "armeabi-v7a"}:
+            raise ValueError("Android assembler produced an invalid ABI set")
 
 
 def assemble_desktop(arguments: argparse.Namespace) -> None:
-    clean_destination(arguments.output)
+    clean_destination(arguments.ass_output)
+    clean_destination(arguments.ffmpeg_output)
     sources = dict(item.split("=", 1) for item in arguments.target)
     if set(sources) != set(DESKTOP):
         raise ValueError("desktop assembler requires the exact four-target matrix")
     for target in DESKTOP:
         source = Path(sources[target]).resolve()
-        root = arguments.output / "resources/META-INF/kmediaffmpeg/native" / target
-        copy_real_tree(source / "runtime", root / "lib")
-        shutil.copyfile(source / "runtime.properties", root / "runtime.properties")
+        ass_root = arguments.ass_output / "resources/META-INF/kmediaass/native" / target
+        copy_real_tree(source / "ass-runtime", ass_root / "lib")
+        shutil.copyfile(
+            source / "ass-runtime.properties", ass_root / "ass-runtime.properties")
+        ffmpeg_root = arguments.ffmpeg_output / "resources/META-INF/kmediaffmpeg/native" / target
+        copy_real_tree(source / "ffmpeg-runtime", ffmpeg_root / "lib")
+        shutil.copyfile(source / "runtime.properties", ffmpeg_root / "runtime.properties")
 
 
 def run(*command: str) -> None:
@@ -72,41 +89,69 @@ def run(*command: str) -> None:
 
 
 def assemble_apple(arguments: argparse.Namespace) -> None:
-    clean_destination(arguments.output)
-    frameworks = arguments.output / "Frameworks"
-    frameworks.mkdir()
-    for name in APPLE_FRAMEWORKS:
-        device = arguments.device / "Frameworks" / f"{name}.framework"
-        simulator = arguments.simulator / "Frameworks" / f"{name}.framework"
-        if not device.is_dir() or not simulator.is_dir():
-            raise ValueError(f"Apple framework slices are incomplete for {name}")
-        run(
-            "xcodebuild", "-create-xcframework",
-            "-framework", str(device), "-framework", str(simulator),
-            "-output", str(frameworks / f"{name}.xcframework"),
+    for output, names, manifest_name in (
+        (arguments.ass_output, APPLE_ASS_FRAMEWORKS, "ass-runtime.properties"),
+        (arguments.ffmpeg_output, APPLE_FFMPEG_FRAMEWORKS, "runtime.properties"),
+    ):
+        clean_destination(output)
+        frameworks = output / "Frameworks"
+        frameworks.mkdir()
+        for name in names:
+            device = arguments.device / "Frameworks" / f"{name}.framework"
+            simulator = arguments.simulator / "Frameworks" / f"{name}.framework"
+            if not device.is_dir() or not simulator.is_dir():
+                raise ValueError(f"Apple framework slices are incomplete for {name}")
+            run(
+                "xcodebuild", "-create-xcframework",
+                "-framework", str(device), "-framework", str(simulator),
+                "-output", str(frameworks / f"{name}.xcframework"),
+            )
+        manifest = {
+            "schemaVersion": 1,
+            "frameworks": list(names),
+            "targets": ["ios-arm64", "ios-simulator-arm64"],
+            "version": arguments.version,
+        }
+        (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        shutil.copyfile(
+            arguments.device / manifest_name,
+            output / f"{manifest_name.removesuffix('.properties')}-ios-arm64.properties",
         )
-    manifest = {
-        "schemaVersion": 1,
-        "frameworks": list(APPLE_FRAMEWORKS),
-        "targets": ["ios-arm64", "ios-simulator-arm64"],
-        "version": arguments.version,
-    }
-    (arguments.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    shutil.copyfile(arguments.device / "runtime.properties", arguments.output / "runtime-ios-arm64.properties")
-    shutil.copyfile(arguments.simulator / "runtime.properties", arguments.output / "runtime-ios-simulator-arm64.properties")
-    podspec = f"""Pod::Spec.new do |spec|
-  spec.name                 = 'KMediaFfmpegRuntime'
+        shutil.copyfile(
+            arguments.simulator / manifest_name,
+            output / f"{manifest_name.removesuffix('.properties')}-ios-simulator-arm64.properties",
+        )
+        shutil.copyfile(ROOT / "LICENSE", output / "LICENSE")
+        shutil.copyfile(ROOT / "NOTICE", output / "NOTICE")
+        shutil.copyfile(ROOT / "THIRD_PARTY_NOTICES.md", output / "THIRD_PARTY_NOTICES.md")
+        shutil.copyfile(ROOT / "docs/RELINKING.md", output / "RELINKING.md")
+    ass_podspec = f"""Pod::Spec.new do |spec|
+  spec.name                 = 'KMediaAssRuntime'
   spec.version              = '{arguments.version}'
-  spec.summary              = 'Shared audited FFmpeg and libass runtime for KMedia projects.'
+  spec.summary              = 'Shared audited libass text runtime for KMedia projects.'
   spec.homepage             = 'https://github.com/Shusek/KMediaFfmpegRuntime'
   spec.license              = {{ :type => 'LGPL-2.1-or-later', :file => 'LICENSE' }}
   spec.author               = {{ 'Shusek' => 'Shusek' }}
   spec.platform             = :ios, '16.2'
-  spec.source               = {{ :http => 'https://github.com/Shusek/KMediaFfmpegRuntime/releases/download/v{arguments.version}/kmedia-ffmpeg-runtime-{arguments.version}-apple-xcframeworks.zip', :sha256 => '{arguments.archive_sha256}' }}
+  spec.source               = {{ :http => 'https://github.com/Shusek/KMediaFfmpegRuntime/releases/download/v{arguments.version}/kmedia-ass-runtime-{arguments.version}-apple-xcframeworks.zip', :sha256 => '__ARCHIVE_SHA256__' }}
   spec.vendored_frameworks  = 'Frameworks/*.xcframework'
 end
 """
-    arguments.podspec.write_text(podspec)
+    ffmpeg_podspec = f"""Pod::Spec.new do |spec|
+  spec.name                 = 'KMediaFfmpegRuntime'
+  spec.version              = '{arguments.version}'
+  spec.summary              = 'Shared audited FFmpeg runtime for KMedia projects.'
+  spec.homepage             = 'https://github.com/Shusek/KMediaFfmpegRuntime'
+  spec.license              = {{ :type => 'LGPL-2.1-or-later', :file => 'LICENSE' }}
+  spec.author               = {{ 'Shusek' => 'Shusek' }}
+  spec.platform             = :ios, '16.2'
+  spec.source               = {{ :http => 'https://github.com/Shusek/KMediaFfmpegRuntime/releases/download/v{arguments.version}/kmedia-ffmpeg-runtime-{arguments.version}-apple-xcframeworks.zip', :sha256 => '__ARCHIVE_SHA256__' }}
+  spec.dependency           'KMediaAssRuntime', '= {arguments.version}'
+  spec.vendored_frameworks  = 'Frameworks/*.xcframework'
+end
+"""
+    arguments.ass_podspec.write_text(ass_podspec)
+    arguments.ffmpeg_podspec.write_text(ffmpeg_podspec)
 
 
 def deterministic_zip(source: Path, destination: Path, epoch: int) -> None:
@@ -170,19 +215,22 @@ def main() -> int:
     android = commands.add_parser("android")
     android.add_argument("--arm64", type=Path, required=True)
     android.add_argument("--armv7", type=Path, required=True)
-    android.add_argument("--output", type=Path, required=True)
+    android.add_argument("--ass-output", type=Path, required=True)
+    android.add_argument("--ffmpeg-output", type=Path, required=True)
     android.set_defaults(function=assemble_android)
     desktop = commands.add_parser("desktop")
     desktop.add_argument("--target", action="append", required=True)
-    desktop.add_argument("--output", type=Path, required=True)
+    desktop.add_argument("--ass-output", type=Path, required=True)
+    desktop.add_argument("--ffmpeg-output", type=Path, required=True)
     desktop.set_defaults(function=assemble_desktop)
     apple = commands.add_parser("apple")
     apple.add_argument("--device", type=Path, required=True)
     apple.add_argument("--simulator", type=Path, required=True)
-    apple.add_argument("--output", type=Path, required=True)
-    apple.add_argument("--podspec", type=Path, required=True)
+    apple.add_argument("--ass-output", type=Path, required=True)
+    apple.add_argument("--ffmpeg-output", type=Path, required=True)
+    apple.add_argument("--ass-podspec", type=Path, required=True)
+    apple.add_argument("--ffmpeg-podspec", type=Path, required=True)
     apple.add_argument("--version", required=True)
-    apple.add_argument("--archive-sha256", default="__ARCHIVE_SHA256__")
     apple.set_defaults(function=assemble_apple)
     package = commands.add_parser("package-apple")
     package.add_argument("--source", type=Path, required=True)

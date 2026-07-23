@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
-"""Validate and package the two closed Maven Central coordinates."""
+"""Validate and package the four closed Maven Central coordinates."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 
 GROUP = Path("io/github/shusek")
 ARTIFACTS = {
+    "kmedia-ass-runtime-android": "aar",
+    "kmedia-ass-runtime-desktop": "jar",
     "kmedia-ffmpeg-runtime-android": "aar",
     "kmedia-ffmpeg-runtime-desktop": "jar",
 }
@@ -61,7 +63,7 @@ def base_files(staging: Path, version: str) -> list[Path]:
         if path.is_file() and not path.name.endswith((".asc", ".md5", ".sha1"))
     }
     if actual != set(expected):
-        raise ValueError("Maven staging inventory differs from the closed two-coordinate contract")
+        raise ValueError("Maven staging inventory differs from the closed four-coordinate contract")
     return sorted(expected)
 
 

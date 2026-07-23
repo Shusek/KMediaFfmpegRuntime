@@ -26,7 +26,11 @@ val desktopOnly =
 
 include(":kmedia-ffmpeg-runtime-desktop")
 project(":kmedia-ffmpeg-runtime-desktop").projectDir = file("runtime-desktop")
+include(":kmedia-ass-runtime-desktop")
+project(":kmedia-ass-runtime-desktop").projectDir = file("ass-runtime-desktop")
 if (!desktopOnly) {
     include(":kmedia-ffmpeg-runtime-android")
     project(":kmedia-ffmpeg-runtime-android").projectDir = file("runtime-android")
+    include(":kmedia-ass-runtime-android")
+    project(":kmedia-ass-runtime-android").projectDir = file("ass-runtime-android")
 }
