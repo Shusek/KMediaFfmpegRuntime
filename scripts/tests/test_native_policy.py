@@ -123,6 +123,27 @@ class NativePolicyTest(unittest.TestCase):
         self.assertIn("JAVA_HOME: ${{ steps.setup_java.outputs.path }}", workflow)
         self.assertIn("| tr -d '\\r' | sort -u", workflow)
 
+    def test_release_packages_ass_frameworks_only_in_ios_sdk_archives(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        sdk_packaging = workflow.split(
+            "      - name: Package every public SDK with its ABI manifest and evidence",
+            maxsplit=1,
+        )[1].split(
+            "      - name: Stage all four public Maven coordinates",
+            maxsplit=1,
+        )[0]
+        non_apple_sdks, apple_sdks = sdk_packaging.split(
+            "          for target in ios-arm64 ios-simulator-arm64; do",
+            maxsplit=1,
+        )
+        non_apple_ass_archive = non_apple_sdks.rsplit(
+            '              "$RUNNER_TEMP/kmedia-ass-runtime-$RELEASE_VERSION-$target-sdk.tar.gz"',
+            maxsplit=1,
+        )[1]
+        self.assertIn('-C "$source/ass" sdk \\', non_apple_ass_archive)
+        self.assertNotIn('-C "$source/ass" sdk Frameworks \\', non_apple_ass_archive)
+        self.assertIn('-C "$source/ass" sdk Frameworks \\', apple_sdks)
+
     def test_desktop_java_home_uses_explicit_path_when_msys_hides_javac(self):
         with tempfile.TemporaryDirectory() as directory:
             with (
