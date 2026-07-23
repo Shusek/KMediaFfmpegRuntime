@@ -112,7 +112,10 @@ jobs:
             --url "https://central.sonatype.com/api/v1/publisher/upload?name=KMediaFfmpegRuntime%20$RELEASE_VERSION&publishingType=$PUBLISHING_TYPE"
           deployment="$(tr -d '\r\n' < "$response")"
           [[ "$deployment" =~ ^[0-9a-fA-F-]{36}$ ]]
-          for attempt in {1..90}; do
+          # Native runtime bundles can remain in PUBLISHING for longer than
+          # 15 minutes. Keep polling the existing deployment instead of
+          # encouraging a duplicate upload after an otherwise healthy run.
+          for attempt in {1..240}; do
             state="$(curl --config "$config" --fail-with-body --silent --show-error --request POST \
               --url "https://central.sonatype.com/api/v1/publisher/status?id=$deployment" | jq -r '.deploymentState')"
             case "$state" in
