@@ -176,6 +176,19 @@ jobs:
             --output "$runner_temp/output" \
             "${args[@]}"
           test "$(cat "$runner_temp/output/runtime-id.txt")" = "${{ inputs.tested_runtime_id }}"
+      - name: Load the Windows runtime without toolchain DLL search paths
+        if: matrix.target == 'windows-x86_64'
+        shell: pwsh
+        env:
+          JAVA_HOME: ${{ steps.setup_java.outputs.path }}
+        run: |
+          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+          $runtime = Join-Path $env:RUNNER_TEMP "output\sdk\windows-x86_64"
+          .\gradlew.bat --no-daemon --rerun-tasks `
+            "-PkmediaAssTestRuntime=$runtime" `
+            "-PkmediaFfmpegTestRuntime=$runtime" `
+            :kmedia-ass-runtime-desktop:test `
+            :kmedia-ffmpeg-runtime-desktop:test
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: native-${{ matrix.target }}

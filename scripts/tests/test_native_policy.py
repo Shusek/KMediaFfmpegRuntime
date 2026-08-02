@@ -229,6 +229,29 @@ class NativePolicyTest(unittest.TestCase):
             self.assertIn(str(ass_import), command)
             self.assertNotIn("-L", command)
 
+    def test_windows_ass_build_does_not_import_msys_toolchain_runtimes(self):
+        self.assertIn(
+            "-Dcpp_link_args=-static-libgcc",
+            BUILD.component_arguments("harfbuzz", "windows-x86_64"),
+        )
+        libass = BUILD.load_json(ROOT / "compliance/components/libass.json")
+        patch_policy = libass["platformPatches"]["windows"][0]
+        self.assertEqual(
+            "native/patches/libass-0.17.5-disable-iconv-on-windows.patch",
+            patch_policy["path"],
+        )
+        patch = ROOT / patch_policy["path"]
+        self.assertEqual(patch_policy["sha256"], BUILD.sha256(patch))
+        self.assertIn("if host_system != 'windows'", patch.read_text())
+
+    def test_windows_workflows_test_with_only_os_dll_search_paths(self):
+        clean_path = '$env:Path = "$env:SystemRoot\\System32;$env:SystemRoot"'
+        for workflow in ("ci.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            self.assertIn(clean_path, text)
+            self.assertIn("-PkmediaAssTestRuntime=$runtime", text)
+            self.assertIn("-PkmediaFfmpegTestRuntime=$runtime", text)
+
 
 if __name__ == "__main__":
     unittest.main()

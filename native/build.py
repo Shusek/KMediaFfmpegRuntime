@@ -250,6 +250,39 @@ def namespace_sources(sources: Path, target: str, records: list[dict[str, str]])
         records.append({"path": patch_file.relative_to(ROOT).as_posix(), "sha256": sha256(patch_file)})
 
 
+def target_platform(target: str) -> str:
+    if target.startswith("android-"):
+        return "android"
+    if target.startswith("ios-"):
+        return "ios"
+    return target.split("-", 1)[0]
+
+
+def apply_platform_patches(
+    sources: Path, target: str, records: list[dict[str, str]]
+) -> None:
+    patch_root = (ROOT / "native/patches").resolve()
+    platform_name = target_platform(target)
+    for component in COMPONENTS:
+        manifest = load_json(ROOT / f"compliance/components/{component}.json")
+        for patch in manifest.get("platformPatches", {}).get(platform_name, []):
+            relative = patch["path"]
+            patch_file = (ROOT / relative).resolve()
+            if patch_file.parent != patch_root or not patch_file.is_file():
+                raise ValueError(f"{component}: invalid platform patch: {relative}")
+            actual_hash = sha256(patch_file)
+            if actual_hash != patch["sha256"]:
+                raise ValueError(f"{component}: platform patch hash differs: {relative}")
+            run(
+                "patch", "-p1", "--forward", "--input", str(patch_file),
+                cwd=sources / component,
+            )
+            records.append({
+                "path": patch_file.relative_to(ROOT).as_posix(),
+                "sha256": actual_hash,
+            })
+
+
 def prepare_sources(
     work: Path, target: str, source_archives: Path | None
 ) -> tuple[Path, Path, dict[str, str]]:
@@ -268,6 +301,7 @@ def prepare_sources(
     signature = verify_ffmpeg_signature(downloads, policy, source_archives)
     records: list[dict[str, str]] = []
     namespace_sources(sources, target, records)
+    apply_platform_patches(sources, target, records)
     (work / "source-patches.json").write_text(json.dumps({"schemaVersion": 1, "patches": records}, indent=2) + "\n")
     return sources, downloads, signature
 
@@ -342,8 +376,7 @@ def write_apple_cross(path: Path, target: str, prefix: Path, work: Path) -> tupl
 def component_arguments(component: str, target: str) -> list[str]:
     manifest = load_json(ROOT / f"compliance/components/{component}.json")
     arguments = list(manifest.get("buildArguments", []))
-    platform_name = "android" if target.startswith("android-") else "ios" if target.startswith("ios-") else target.split("-", 1)[0]
-    arguments.extend(manifest.get("platformArguments", {}).get(platform_name, []))
+    arguments.extend(manifest.get("platformArguments", {}).get(target_platform(target), []))
     return arguments
 
 
@@ -360,8 +393,7 @@ def build_meson(component: str, target: str, sources: Path, builds: Path, prefix
 def ffmpeg_arguments(target: str) -> list[str]:
     manifest = load_json(ROOT / "compliance/components/ffmpeg.json")
     arguments = list(manifest["buildArguments"])
-    platform_name = "android" if target.startswith("android-") else "ios" if target.startswith("ios-") else target.split("-", 1)[0]
-    arguments.extend(manifest.get("platformArguments", {}).get(platform_name, []))
+    arguments.extend(manifest.get("platformArguments", {}).get(target_platform(target), []))
     if target == "windows-x86_64":
         arguments.extend([
             "--disable-pthreads", "--enable-w32threads", "--extra-ldflags=-no-pthread",
