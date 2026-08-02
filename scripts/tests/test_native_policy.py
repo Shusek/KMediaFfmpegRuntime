@@ -37,6 +37,25 @@ class NativePolicyTest(unittest.TestCase):
         self.assertIn("--enable-libass", arguments)
         self.assertIn("--enable-filter=buffer,buffersink,subtitles,scale,format", arguments)
         self.assertIn("--enable-videotoolbox", arguments)
+        self.assertIn(
+            "--enable-hwaccel="
+            "av1_videotoolbox,h264_videotoolbox,hevc_videotoolbox,"
+            "mpeg2_videotoolbox,mpeg4_videotoolbox,vp9_videotoolbox",
+            arguments,
+        )
+        self.assertIn("--enable-encoder=aac,h264_videotoolbox", arguments)
+
+    def test_shared_profile_contains_legacy_avi_asf_video_and_audio_decoders(self):
+        arguments = BUILD.ffmpeg_arguments("linux-x86_64")
+        demuxers = next(value for value in arguments if value.startswith("--enable-demuxer="))
+        decoders = next(value for value in arguments if value.startswith("--enable-decoder="))
+        parsers = next(value for value in arguments if value.startswith("--enable-parser="))
+
+        self.assertIn("avi", demuxers)
+        self.assertIn("asf", demuxers)
+        for decoder in ("mjpeg", "vc1", "wmapro", "wmav2", "wmv3"):
+            self.assertIn(decoder, decoders)
+        self.assertIn("vc1", parsers)
 
     def test_macos_rewrites_major_version_install_names_to_rpath(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -18,12 +18,12 @@ Android x86, and Intel macOS are excluded by closed policy.
 
 ```kotlin
 dependencies {
-    implementation("io.github.shusek:kmedia-ass-runtime-android:0.1.0-rc.3")
-    implementation("io.github.shusek:kmedia-ass-runtime-desktop:0.1.0-rc.3")
+    implementation("io.github.shusek:kmedia-ass-runtime-android:0.1.0-rc.4")
+    implementation("io.github.shusek:kmedia-ass-runtime-desktop:0.1.0-rc.4")
 
     // Adds FFmpeg and pulls the exact ASS runtime transitively.
-    implementation("io.github.shusek:kmedia-ffmpeg-runtime-android:0.1.0-rc.3")
-    implementation("io.github.shusek:kmedia-ffmpeg-runtime-desktop:0.1.0-rc.3")
+    implementation("io.github.shusek:kmedia-ffmpeg-runtime-android:0.1.0-rc.4")
+    implementation("io.github.shusek:kmedia-ffmpeg-runtime-desktop:0.1.0-rc.4")
 }
 ```
 
@@ -63,3 +63,8 @@ Each release also contains per-target SDKs, manifests, source archives, build
 arguments, an SBOM, SHA-256 sums, and replacement instructions. See
 [licensing](docs/LICENSING.md), [relinking](docs/RELINKING.md), and the
 machine-readable policy under `compliance/` before redistribution.
+
+The reviewed common profile includes local AVI and ASF/WMV demuxing together
+with MPEG-4 Part 2, MJPEG, VC-1, WMV1/2/3 and WMA-family decoding. The macOS
+profile additionally exposes the audited VideoToolbox decode path and AVC/AAC
+encoding needed by native MPV output and the AVFoundation compatibility bridge.
