@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import importlib.util
+import io
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +17,47 @@ SPEC.loader.exec_module(BUILD)
 
 
 class NativePolicyTest(unittest.TestCase):
+    def test_download_retries_transient_network_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source.tar.xz"
+            with (
+                mock.patch.object(
+                    BUILD.urllib.request,
+                    "urlopen",
+                    side_effect=[urllib.error.URLError("reset"), io.BytesIO(b"archive")],
+                ) as open_url,
+                mock.patch.object(BUILD.time, "sleep") as sleep,
+            ):
+                BUILD.download("https://example.invalid/source.tar.xz", destination)
+
+            self.assertEqual(b"archive", destination.read_bytes())
+            self.assertEqual(2, open_url.call_count)
+            sleep.assert_called_once_with(1)
+
+    def test_download_does_not_retry_non_transient_http_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source.tar.xz"
+            error = urllib.error.HTTPError(
+                "https://example.invalid/source.tar.xz", 404, "Not Found", {}, None
+            )
+            with (
+                mock.patch.object(BUILD.urllib.request, "urlopen", side_effect=error) as open_url,
+                mock.patch.object(BUILD.time, "sleep") as sleep,
+                self.assertRaises(urllib.error.HTTPError),
+            ):
+                BUILD.download("https://example.invalid/source.tar.xz", destination)
+
+            open_url.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_freetype_uses_its_official_sourceforge_release_mirror(self):
+        freetype = BUILD.load_json(ROOT / "compliance/components/freetype.json")
+        self.assertEqual(
+            "https://downloads.sourceforge.net/project/freetype/freetype2/"
+            "2.14.1/freetype-2.14.1.tar.xz",
+            freetype["sourceUrl"],
+        )
+
     def test_target_matrix_is_closed(self):
         policy = BUILD.load_json(ROOT / "compliance/policy/release-policy.json")
         self.assertEqual(
@@ -228,6 +271,38 @@ class NativePolicyTest(unittest.TestCase):
             command = invoke.call_args.args
             self.assertIn(str(ass_import), command)
             self.assertNotIn("-L", command)
+
+    def test_windows_ass_build_does_not_import_msys_toolchain_runtimes(self):
+        self.assertIn(
+            "-Dc_link_args=-static-libgcc",
+            BUILD.component_arguments("harfbuzz", "windows-x86_64"),
+        )
+        libass = BUILD.load_json(ROOT / "compliance/components/libass.json")
+        patch_policy = libass["platformPatches"]["windows"][0]
+        self.assertEqual(
+            "native/patches/libass-0.17.5-disable-iconv-on-windows.patch",
+            patch_policy["path"],
+        )
+        patch = ROOT / patch_policy["path"]
+        self.assertEqual(patch_policy["sha256"], BUILD.sha256(patch))
+        self.assertIn("if host_system != 'windows'", patch.read_text())
+
+    def test_windows_workflows_test_with_only_os_dll_search_paths(self):
+        clean_path = '$env:Path = "$env:SystemRoot\\System32;$env:SystemRoot"'
+        for workflow in ("ci.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            self.assertIn(clean_path, text)
+            self.assertIn("-PkmediaAssTestRuntime=$runtime", text)
+            self.assertIn("-PkmediaFfmpegTestRuntime=$runtime", text)
+
+    def test_native_workflows_reuse_one_hash_verified_source_inventory(self):
+        fetcher = (ROOT / "scripts/fetch_sources.py").read_text()
+        self.assertIn("build.sha256(destination)", fetcher)
+        for workflow in ("ci.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            self.assertIn("scripts/fetch_sources.py", text)
+            self.assertIn("name: pinned-native-sources", text)
+            self.assertIn("--source-archives", text)
 
 
 if __name__ == "__main__":

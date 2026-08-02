@@ -30,5 +30,11 @@
     "macos": ["-Dcoretext=enabled"],
     "ios": ["-Dcoretext=enabled"],
     "windows": ["-Ddirectwrite=enabled"]
+  },
+  "platformPatches": {
+    "windows": [{
+      "path": "native/patches/libass-0.17.5-disable-iconv-on-windows.patch",
+      "sha256": "08d2fff790ca77d64adcbdd6a6b6691062b037ad1ccb84d79b849edb9e19c5aa"
+    }]
   }
 }

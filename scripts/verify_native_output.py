@@ -10,6 +10,15 @@ import subprocess
 from pathlib import Path
 
 
+WINDOWS_SYSTEM_DLLS = frozenset({
+    "bcrypt.dll",
+    "gdi32.dll",
+    "kernel32.dll",
+    "user32.dll",
+})
+WINDOWS_API_SET_PREFIXES = ("api-ms-win-", "ext-ms-win-")
+
+
 def run(*command: str) -> str:
     return subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE).stdout
 
@@ -54,6 +63,36 @@ def verify_architecture(path: Path, target: str, readelf: str) -> None:
         expected = "AArch64" if target.endswith(("aarch64", "arm64-v8a")) else "ARM" if target.endswith("armeabi-v7a") else "Advanced Micro Devices X86-64"
         if expected not in header:
             raise ValueError(f"{path.name} has the wrong ELF machine")
+
+
+def verify_windows_dependency_closure(
+    graph: dict[str, list[str]], packaged: set[str], scope: str
+) -> None:
+    normalized_packaged = {name.casefold() for name in packaged}
+    if len(normalized_packaged) != len(packaged):
+        raise ValueError(f"{scope} contains case-colliding Windows DLL names")
+    if {name.casefold() for name in graph} != normalized_packaged:
+        raise ValueError(f"{scope} dependency graph differs from its DLL inventory")
+
+    missing: list[str] = []
+    for library, imported in sorted(graph.items()):
+        if not imported:
+            raise ValueError(f"objdump reported no imports for {library}")
+        for dependency in imported:
+            normalized = Path(dependency).name.casefold()
+            is_api_set = normalized.startswith(WINDOWS_API_SET_PREFIXES)
+            if (
+                normalized not in normalized_packaged
+                and normalized not in WINDOWS_SYSTEM_DLLS
+                and not is_api_set
+            ):
+                missing.append(f"{library} -> {dependency}")
+    if missing:
+        details = "\n  ".join(missing)
+        raise ValueError(
+            f"{scope} imports DLLs outside the packaged runtime and Windows OS contract:\n"
+            f"  {details}\nPATH-only dependencies are forbidden"
+        )
 
 
 def main() -> int:
@@ -116,6 +155,7 @@ def main() -> int:
         (args.output / "ffmpeg-runtime", manifest, 7),
     )
     all_libraries: set[str] = set()
+    windows_dependency_graph: dict[str, list[str]] = {}
     for runtime, scoped_manifest, expected_count in inventories:
         libraries = scoped_manifest["libraries"].split(",")
         files = {path.name for path in runtime.iterdir() if path.is_file() and not path.is_symlink()}
@@ -129,7 +169,10 @@ def main() -> int:
             if scoped_manifest.get("sha256." + library) != sha256(path):
                 raise ValueError(f"{library} hash differs from its manifest")
             verify_architecture(path, args.target, args.readelf)
-            for dependency in dependencies(path, args.target, args.readelf):
+            library_dependencies = dependencies(path, args.target, args.readelf)
+            if args.target.startswith("windows-"):
+                windows_dependency_graph[library] = library_dependencies
+            for dependency in library_dependencies:
                 basename = Path(dependency).name
                 if (
                     args.target.startswith(("macos-", "ios-"))
@@ -146,6 +189,19 @@ def main() -> int:
                     if "kmediaffmpeg" not in basename:
                         raise ValueError(
                             f"{library} retains a generic bundled dependency: {dependency}")
+    if args.target.startswith("windows-"):
+        verify_windows_dependency_closure(
+            windows_dependency_graph, all_libraries, "combined Windows runtime"
+        )
+        ass_libraries = set(ass_manifest["libraries"].split(","))
+        verify_windows_dependency_closure(
+            {
+                library: windows_dependency_graph[library]
+                for library in ass_libraries
+            },
+            ass_libraries,
+            "standalone Windows ASS runtime",
+        )
     avutil = next(
         args.output / "ffmpeg-runtime" / name
         for name in manifest["libraries"].split(",")

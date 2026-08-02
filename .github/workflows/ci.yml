@@ -41,13 +41,35 @@ jobs:
           }
           PY
 
+  pinned-sources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Fetch and hash-verify the closed native source inventory
+        run: python3 -B scripts/fetch_sources.py --output "$RUNNER_TEMP/sources"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pinned-native-sources
+          path: ${{ runner.temp }}/sources
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   native-macos-arm-smoke:
+    needs: pinned-sources
     runs-on: macos-15
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pinned-native-sources
+          path: ${{ runner.temp }}/sources
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
         with:
           distribution: temurin
@@ -67,7 +89,8 @@ jobs:
             --target macos-aarch64 \
             --version 0.1.0-ci \
             --work "$RUNNER_TEMP/native-work" \
-            --output "$RUNNER_TEMP/native-output"
+            --output "$RUNNER_TEMP/native-output" \
+            --source-archives "$RUNNER_TEMP/sources"
           ./gradlew --no-daemon \
             -PkmediaFfmpegDesktopOnly=true \
             -PkmediaAssTestRuntime="$RUNNER_TEMP/native-output/sdk/macos-aarch64" \
@@ -95,6 +118,7 @@ jobs:
             :kmedia-ffmpeg-runtime-desktop:test
 
   native-windows-smoke:
+    needs: pinned-sources
     runs-on: windows-2022
     timeout-minutes: 45
     defaults:
@@ -107,6 +131,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pinned-native-sources
+          path: ${{ runner.temp }}/sources
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
         id: setup_java
         with:
@@ -137,4 +165,17 @@ jobs:
             --target windows-x86_64 \
             --version 0.1.0-ci \
             --work "$runner_temp/native-work" \
-            --output "$runner_temp/native-output"
+            --output "$runner_temp/native-output" \
+            --source-archives "$runner_temp/sources"
+      - name: Load the Windows runtime without MSYS2 DLL search paths
+        shell: pwsh
+        env:
+          JAVA_HOME: ${{ steps.setup_java.outputs.path }}
+        run: |
+          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+          $runtime = Join-Path $env:RUNNER_TEMP "native-output\sdk\windows-x86_64"
+          .\gradlew.bat --no-daemon --rerun-tasks `
+            "-PkmediaAssTestRuntime=$runtime" `
+            "-PkmediaFfmpegTestRuntime=$runtime" `
+            :kmedia-ass-runtime-desktop:test `
+            :kmedia-ffmpeg-runtime-desktop:test

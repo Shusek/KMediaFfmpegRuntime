@@ -76,6 +76,15 @@ jobs:
           echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
           python3 -m unittest discover -s scripts/tests -v
           ./gradlew --no-daemon check
+      - name: Fetch and hash-verify the closed native source inventory
+        run: python3 -B scripts/fetch_sources.py --output "$RUNNER_TEMP/sources"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pinned-native-sources
+          path: ${{ runner.temp }}/sources
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
   native:
     needs: readiness
@@ -116,6 +125,10 @@ jobs:
         with:
           ref: ${{ needs.readiness.outputs.revision }}
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pinned-native-sources
+          path: ${{ runner.temp }}/sources
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
         id: setup_java
         with:
@@ -174,8 +187,22 @@ jobs:
             --version "$RELEASE_VERSION" \
             --work "$runner_temp/work" \
             --output "$runner_temp/output" \
+            --source-archives "$runner_temp/sources" \
             "${args[@]}"
           test "$(cat "$runner_temp/output/runtime-id.txt")" = "${{ inputs.tested_runtime_id }}"
+      - name: Load the Windows runtime without toolchain DLL search paths
+        if: matrix.target == 'windows-x86_64'
+        shell: pwsh
+        env:
+          JAVA_HOME: ${{ steps.setup_java.outputs.path }}
+        run: |
+          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+          $runtime = Join-Path $env:RUNNER_TEMP "output\sdk\windows-x86_64"
+          .\gradlew.bat --no-daemon --rerun-tasks `
+            "-PkmediaAssTestRuntime=$runtime" `
+            "-PkmediaFfmpegTestRuntime=$runtime" `
+            :kmedia-ass-runtime-desktop:test `
+            :kmedia-ffmpeg-runtime-desktop:test
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: native-${{ matrix.target }}
@@ -193,6 +220,10 @@ jobs:
         with:
           ref: ${{ needs.readiness.outputs.revision }}
           persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pinned-native-sources
+          path: ${{ runner.temp }}/sources
       - uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
         with:
           distribution: temurin
@@ -209,7 +240,8 @@ jobs:
           for target in ios-arm64 ios-simulator-arm64; do
             python3 -B native/build.py \
               --target "$target" --version "$RELEASE_VERSION" \
-              --work "$RUNNER_TEMP/work-$target" --output "$RUNNER_TEMP/output-$target"
+              --work "$RUNNER_TEMP/work-$target" --output "$RUNNER_TEMP/output-$target" \
+              --source-archives "$RUNNER_TEMP/sources"
             test "$(cat "$RUNNER_TEMP/output-$target/runtime-id.txt")" = "${{ inputs.tested_runtime_id }}"
           done
       - name: Assemble hash-bound XCFramework archive and podspec
