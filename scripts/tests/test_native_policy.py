@@ -295,6 +295,15 @@ class NativePolicyTest(unittest.TestCase):
             self.assertIn("-PkmediaAssTestRuntime=$runtime", text)
             self.assertIn("-PkmediaFfmpegTestRuntime=$runtime", text)
 
+    def test_native_workflows_reuse_one_hash_verified_source_inventory(self):
+        fetcher = (ROOT / "scripts/fetch_sources.py").read_text()
+        self.assertIn("build.sha256(destination)", fetcher)
+        for workflow in ("ci.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text()
+            self.assertIn("scripts/fetch_sources.py", text)
+            self.assertIn("name: pinned-native-sources", text)
+            self.assertIn("--source-archives", text)
+
 
 if __name__ == "__main__":
     unittest.main()
