@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -125,9 +127,21 @@ def download(url: str, destination: Path, source_archives: Path | None = None) -
         return
     temporary = destination.with_suffix(destination.suffix + ".part")
     request = urllib.request.Request(url, headers={"User-Agent": "KMediaFfmpegRuntime/0.1"})
-    with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
-        shutil.copyfileobj(response, output)
-    temporary.replace(destination)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            temporary.replace(destination)
+            return
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            temporary.unlink(missing_ok=True)
+            if (
+                attempt == 2
+                or isinstance(error, urllib.error.HTTPError)
+                and error.code not in {408, 425, 429, 500, 502, 503, 504}
+            ):
+                raise
+            time.sleep(2 ** attempt)
 
 
 def safe_extract(archive: Path, destination: Path) -> Path:

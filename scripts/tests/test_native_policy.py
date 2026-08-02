@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 import importlib.util
+import io
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +17,47 @@ SPEC.loader.exec_module(BUILD)
 
 
 class NativePolicyTest(unittest.TestCase):
+    def test_download_retries_transient_network_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source.tar.xz"
+            with (
+                mock.patch.object(
+                    BUILD.urllib.request,
+                    "urlopen",
+                    side_effect=[urllib.error.URLError("reset"), io.BytesIO(b"archive")],
+                ) as open_url,
+                mock.patch.object(BUILD.time, "sleep") as sleep,
+            ):
+                BUILD.download("https://example.invalid/source.tar.xz", destination)
+
+            self.assertEqual(b"archive", destination.read_bytes())
+            self.assertEqual(2, open_url.call_count)
+            sleep.assert_called_once_with(1)
+
+    def test_download_does_not_retry_non_transient_http_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "source.tar.xz"
+            error = urllib.error.HTTPError(
+                "https://example.invalid/source.tar.xz", 404, "Not Found", {}, None
+            )
+            with (
+                mock.patch.object(BUILD.urllib.request, "urlopen", side_effect=error) as open_url,
+                mock.patch.object(BUILD.time, "sleep") as sleep,
+                self.assertRaises(urllib.error.HTTPError),
+            ):
+                BUILD.download("https://example.invalid/source.tar.xz", destination)
+
+            open_url.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_freetype_uses_its_official_sourceforge_release_mirror(self):
+        freetype = BUILD.load_json(ROOT / "compliance/components/freetype.json")
+        self.assertEqual(
+            "https://downloads.sourceforge.net/project/freetype/freetype2/"
+            "2.14.1/freetype-2.14.1.tar.xz",
+            freetype["sourceUrl"],
+        )
+
     def test_target_matrix_is_closed(self):
         policy = BUILD.load_json(ROOT / "compliance/policy/release-policy.json")
         self.assertEqual(
