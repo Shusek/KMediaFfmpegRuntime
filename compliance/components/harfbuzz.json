@@ -19,6 +19,6 @@
     "-Dbenchmark=disabled"
   ],
   "platformArguments": {
-    "windows": ["-Dcpp_link_args=-static-libgcc"]
+    "windows": ["-Dc_link_args=-static-libgcc"]
   }
 }

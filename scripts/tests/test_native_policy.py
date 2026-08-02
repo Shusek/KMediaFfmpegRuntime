@@ -231,7 +231,7 @@ class NativePolicyTest(unittest.TestCase):
 
     def test_windows_ass_build_does_not_import_msys_toolchain_runtimes(self):
         self.assertIn(
-            "-Dcpp_link_args=-static-libgcc",
+            "-Dc_link_args=-static-libgcc",
             BUILD.component_arguments("harfbuzz", "windows-x86_64"),
         )
         libass = BUILD.load_json(ROOT / "compliance/components/libass.json")
