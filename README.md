@@ -68,3 +68,7 @@ The reviewed common profile includes local AVI and ASF/WMV demuxing together
 with MPEG-4 Part 2, MJPEG, VC-1, WMV1/2/3 and WMA-family decoding. The macOS
 profile additionally exposes the audited VideoToolbox decode path and AVC/AAC
 encoding needed by native MPV output and the AVFoundation compatibility bridge.
+The Windows profile exposes the matching libass filter graph, Media Foundation
+AVC encoder and AAC encoder needed by KMediaBridge to produce Media
+Foundation-compatible fragmented MP4. SDK manifests authenticate these optional
+desktop capabilities so older runtimes remain fail-closed.

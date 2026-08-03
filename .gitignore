@@ -6,3 +6,5 @@ build/
 native-work/
 native-dist/
 *.log
+__pycache__/
+*.py[cod]

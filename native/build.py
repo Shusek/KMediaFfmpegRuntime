@@ -785,12 +785,23 @@ def write_manifest(
     ]
     if ass_runtime_id is not None:
         lines.append(f"assRuntimeId={ass_runtime_id}")
+        for feature, enabled in ffmpeg_runtime_features(target).items():
+            lines.append(f"feature.{feature}={str(enabled).lower()}")
     for component in sorted(components):
         lines.extend([f"version.{component}={VERSIONS[component]}", f"license.{component}={LICENSES[component]}"])
     for library in libraries:
         lines.append(f"sha256.{library}={sha256(runtime / library)}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
+
+
+def ffmpeg_runtime_features(target: str) -> dict[str, bool]:
+    full_desktop_transcode = target in {"macos-aarch64", "windows-x86_64"}
+    return {
+        "hdrToSdrToneMap": target in ANDROID or full_desktop_transcode,
+        "subtitleBurnIn": full_desktop_transcode,
+        "avcAacTranscode": full_desktop_transcode,
+    }
 
 
 def copy_sdk(

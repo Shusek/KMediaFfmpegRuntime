@@ -51,6 +51,12 @@
       "--enable-hwaccel=av1_videotoolbox,h264_videotoolbox,hevc_videotoolbox,mpeg2_videotoolbox,mpeg4_videotoolbox,vp9_videotoolbox",
       "--enable-encoder=aac,h264_videotoolbox"
     ],
+    "windows": [
+      "--enable-libass",
+      "--enable-filter=buffer,buffersink,subtitles,scale,format",
+      "--enable-mediafoundation",
+      "--enable-encoder=aac,h264_mf"
+    ],
     "ios": []
   }
 }
