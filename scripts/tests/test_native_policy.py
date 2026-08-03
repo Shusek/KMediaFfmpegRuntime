@@ -2,10 +2,11 @@
 
 import importlib.util
 import io
+import os
 import tempfile
 import unittest
 import urllib.error
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 
@@ -88,6 +89,52 @@ class NativePolicyTest(unittest.TestCase):
         )
         self.assertIn("--enable-encoder=aac,h264_videotoolbox", arguments)
 
+    def test_windows_union_enables_full_sdr_bridge_with_media_foundation(self):
+        arguments = BUILD.ffmpeg_arguments("windows-x86_64")
+        self.assertIn("--enable-libass", arguments)
+        self.assertIn("--enable-filter=buffer,buffersink,subtitles,scale,format", arguments)
+        self.assertIn("--enable-d3d11va", arguments)
+        self.assertIn("--enable-mediafoundation", arguments)
+        self.assertIn("--enable-encoder=aac,h264_mf", arguments)
+        self.assertIn("--disable-network", arguments)
+        self.assertEqual(
+            {
+                "hdrToSdrToneMap": True,
+                "subtitleBurnIn": True,
+                "avcAacTranscode": True,
+            },
+            BUILD.ffmpeg_runtime_features("windows-x86_64"),
+        )
+
+    def test_windows_runtime_manifest_authenticates_full_bridge_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            library = "kmediaffmpeg_avcodec-kmb-62.dll"
+            (runtime / library).write_bytes(b"runtime")
+            manifest = root / "runtime.properties"
+
+            BUILD.write_manifest(
+                manifest,
+                "windows-x86_64",
+                "0.1.0-test",
+                "runtime-id",
+                "configuration",
+                runtime,
+                [library],
+                ("ffmpeg",),
+                "ass-runtime-id",
+            )
+
+            properties = dict(
+                line.split("=", 1)
+                for line in manifest.read_text().splitlines()
+            )
+            self.assertEqual("true", properties["feature.hdrToSdrToneMap"])
+            self.assertEqual("true", properties["feature.subtitleBurnIn"])
+            self.assertEqual("true", properties["feature.avcAacTranscode"])
+
     def test_shared_profile_contains_legacy_avi_asf_video_and_audio_decoders(self):
         arguments = BUILD.ffmpeg_arguments("linux-x86_64")
         demuxers = next(value for value in arguments if value.startswith("--enable-demuxer="))
@@ -100,6 +147,7 @@ class NativePolicyTest(unittest.TestCase):
             self.assertIn(decoder, decoders)
         self.assertIn("vc1", parsers)
 
+    @unittest.skipIf(os.name == "nt", "Creating symlinks requires elevated Windows privileges")
     def test_macos_rewrites_major_version_install_names_to_rpath(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -162,11 +210,11 @@ class NativePolicyTest(unittest.TestCase):
             mock.patch.object(BUILD, "run", return_value="/d/a/_temp/work\n") as invoke,
         ):
             self.assertEqual("/d/a/_temp/work", BUILD.command_path(Path("D:/a/_temp/work")))
-        invoke.assert_called_once_with("cygpath", "-u", "D:/a/_temp/work")
+        invoke.assert_called_once_with("cygpath", "-u", str(Path("D:/a/_temp/work")))
 
     def test_command_path_keeps_posix_paths(self):
         with mock.patch.object(BUILD.platform, "system", return_value="Darwin"):
-            self.assertEqual("/tmp/work", BUILD.command_path(Path("/tmp/work")))
+            self.assertEqual("/tmp/work", BUILD.command_path(PurePosixPath("/tmp/work")))
 
     def test_find_library_ignores_windows_definition_file(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -288,10 +336,15 @@ class NativePolicyTest(unittest.TestCase):
         self.assertIn("if host_system != 'windows'", patch.read_text())
 
     def test_windows_workflows_test_with_only_os_dll_search_paths(self):
-        clean_path = '$env:Path = "$env:SystemRoot\\System32;$env:SystemRoot"'
+        system_path = '$systemPath = "$env:SystemRoot\\System32;$env:SystemRoot"'
+        probe_path = '$env:Path = "$(Join-Path $runtime \'lib\');$systemPath"'
+        clean_test_path = '$env:Path = $systemPath'
         for workflow in ("ci.yml", "release.yml"):
             text = (ROOT / ".github/workflows" / workflow).read_text()
-            self.assertIn(clean_path, text)
+            self.assertIn(system_path, text)
+            self.assertIn(probe_path, text)
+            self.assertIn(clean_test_path, text)
+            self.assertLess(text.index(probe_path), text.index(clean_test_path))
             self.assertIn("-PkmediaAssTestRuntime=$runtime", text)
             self.assertIn("-PkmediaFfmpegTestRuntime=$runtime", text)
 

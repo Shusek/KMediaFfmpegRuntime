@@ -14,6 +14,7 @@ WINDOWS_SYSTEM_DLLS = frozenset({
     "bcrypt.dll",
     "gdi32.dll",
     "kernel32.dll",
+    "ole32.dll",
     "user32.dll",
 })
 WINDOWS_API_SET_PREFIXES = ("api-ms-win-", "ext-ms-win-")

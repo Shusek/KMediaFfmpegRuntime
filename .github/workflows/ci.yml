@@ -167,13 +167,23 @@ jobs:
             --work "$runner_temp/native-work" \
             --output "$runner_temp/native-output" \
             --source-archives "$runner_temp/sources"
+          sdk="$runner_temp/native-output/sdk/windows-x86_64"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -static-libgcc \
+            -I "$sdk/include" native/tests/windows_full_bridge_probe.c \
+            -L "$sdk/lib" -lkmediaffmpeg_avfilter -lkmediaffmpeg_avformat \
+            -lkmediaffmpeg_avcodec -lkmediaffmpeg_swscale -lkmediaffmpeg_swresample \
+            -lkmediaffmpeg_avutil -o "$runner_temp/windows_full_bridge_probe.exe"
       - name: Load the Windows runtime without MSYS2 DLL search paths
         shell: pwsh
         env:
           JAVA_HOME: ${{ steps.setup_java.outputs.path }}
         run: |
-          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+          $systemPath = "$env:SystemRoot\System32;$env:SystemRoot"
           $runtime = Join-Path $env:RUNNER_TEMP "native-output\sdk\windows-x86_64"
+          $env:Path = "$(Join-Path $runtime 'lib');$systemPath"
+          & (Join-Path $env:RUNNER_TEMP "windows_full_bridge_probe.exe")
+          if ($LASTEXITCODE -ne 0) { throw "Windows full bridge component probe failed." }
+          $env:Path = $systemPath
           .\gradlew.bat --no-daemon --rerun-tasks `
             "-PkmediaAssTestRuntime=$runtime" `
             "-PkmediaFfmpegTestRuntime=$runtime" `
