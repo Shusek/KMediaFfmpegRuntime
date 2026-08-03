@@ -93,6 +93,7 @@ class NativePolicyTest(unittest.TestCase):
         arguments = BUILD.ffmpeg_arguments("windows-x86_64")
         self.assertIn("--enable-libass", arguments)
         self.assertIn("--enable-filter=buffer,buffersink,subtitles,scale,format", arguments)
+        self.assertIn("--enable-d3d11va", arguments)
         self.assertIn("--enable-mediafoundation", arguments)
         self.assertIn("--enable-encoder=aac,h264_mf", arguments)
         self.assertIn("--disable-network", arguments)

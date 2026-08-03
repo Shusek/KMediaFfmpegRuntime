@@ -54,6 +54,7 @@
     "windows": [
       "--enable-libass",
       "--enable-filter=buffer,buffersink,subtitles,scale,format",
+      "--enable-d3d11va",
       "--enable-mediafoundation",
       "--enable-encoder=aac,h264_mf"
     ],
