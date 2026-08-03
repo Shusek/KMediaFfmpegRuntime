@@ -21,6 +21,7 @@ class WindowsDependencyClosureTest(unittest.TestCase):
                 "runtime.dll": [
                     "dependency.dll",
                     "KERNEL32.dll",
+                    "OLE32.dll",
                     "api-ms-win-crt-runtime-l1-1-0.dll",
                 ],
                 "dependency.dll": ["bcrypt.dll"],
